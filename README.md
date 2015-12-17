@@ -1,5 +1,5 @@
-cache_dirs script unRAID Server
-===============================
+cache_dirs script unRAID V6.1
+=============================
 
 This is an updated version of Joe L.'s cache_dirs sript for caching directories in memory to prevent unnecessary disk drive spinup.  Thank you Alex R. Berg for your updates to cache_dirs.
 
@@ -35,3 +35,6 @@ Version 2.0.5
 
 Version 2.0.6
 - Included original 'B' option, it is unused but kept for compatibility reasons.  This was done for the Dynamix Cache Dirs plugin.
+
+Version 2.1.0
+- Removed code specific to V5, removed wait for array to come online, removed force disks busy, and modified script for readability.
