@@ -135,8 +135,6 @@ usage() {
 	echo " -c command = use command instead of \"find\" "
 	echo "              (\"command\" should be quoted if it has embedded spaces)"
 	echo " -a args  =   append args to command"
-	# TODO Remove -u
-	echo " -u       =   also scan /mnt/user (scan user shares)"
 	echo " -e exclude_dir  (may be repeated as many times as desired)"
 	echo " -i include_dir  (may be repeated as many times as desired)"
 	echo " -p NN    =   set cache_pressure to NN (by default = 10)"
@@ -162,7 +160,6 @@ include_array_count=0
 quit_flag="no"
 suspend_during_mover="yes"
 commandargs=$*
-user_share_dir=""
 args="-noleaf"
 concise_log="no"
 # When min_disk_idle_before_restarting_scan_sec was 4 it restarting scanning too soon
@@ -239,7 +236,7 @@ while getopts "p:m:M:c:d:D:e:i:l:FszBbwuvVahqSU:t:X:Y:Z:" opt; do
 	F ) background=no ;;
 	v ) verbose=yes ;;
 	V ) echo "$program_name version: $version"; exit 0 ;;
-	u ) user_share_dir="/mnt/user" ;;
+	u ) ;; # unused, kept for compatibility reasons
 	c ) command="$OPTARG" ;;
 	a ) args="$OPTARG" ;;
 	d ) maxDepth=$OPTARG
@@ -523,7 +520,6 @@ do_deep_scan() {
 	# will update dir_list on each scan, in case new shares have been added
 	dir_list=$(build_dir_list)
 	scan_start=$(date +%s%N)
-	# TODO $user_share_dir
 	for i in /mnt/disk* /mnt/cache 
 	do
 		{
@@ -752,7 +748,7 @@ do
 	fi
 
 	# always cache root dirs on each of the disks
-	for i in /mnt/disk* /mnt/cache $user_share_dir
+	for i in /mnt/disk* /mnt/cache
 	do
 		find $i -maxdepth 1 -noleaf >/dev/null 2>/dev/null
 	done
