@@ -1,0 +1,5 @@
+/usr/local/emhttp/plugins/dynamix.cache.dirs/scripts/rc.cachedirs stop
+
+#   [ -x /usr/local/emhttp/plugins/dynamix.cache.dirs/scripts/rc.cachedirs ] && 
+#   /usr/local/emhttp/plugins/dynamix.cache.dirs/scripts/rc.cachedirs stop || 
+#   /usr/local/emhttp/plugins/dynamix.cache.dirs/scripts/cache_dirs -q

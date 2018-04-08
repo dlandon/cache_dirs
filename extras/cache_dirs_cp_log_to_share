@@ -1,0 +1,8 @@
+TIME=`/boot/bin/datetimestr`
+echo "Moving cache dir log to /storage/"
+mv /var/log/cache_dirs.log /storage/${TIME}_cache_dirs.log
+cp /var/log/cache_dirs_lost_cache.log /storage/${TIME}_cache_dirs_lost_cache.log
+
+echo "Create empty cache_dirs.log so cache dirs log will run"
+touch /var/log/cache_dirs.log
+head -1 /var/log/cache_dirs_lost_cache.log > /var/log/cache_dirs_lost_cache.log

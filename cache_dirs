@@ -1,4 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+#Programmer notes
+# Check with https://www.shellcheck.net/
 
 ####################################################################################
 # cache_dirs
@@ -92,12 +95,19 @@
 # Version 2.1.1	- Removed additional unused variables.
 #				- Removed V5 ulimit usage info that doesn't apply.
 #				- Show type of scanning being done - adaptive or fixed when cache_dirs is started.
-#
 # dlandon
+#
+# Version 2.2.0e- When cache lost, don't wait for disks idle, instead decrease depth
+#               - Now scans each disks and cache in separate processes. Thus removed option -u for scan user
+#               - Fixed loss of adaptive after 1 week
+#               - Weekly rescan only when disks been idle long
+#               - Apaptive scan will not retry increasing level to previous seen stable level until disks have been idle for a long time (20s)
+#               - -q now also kills subproccesses immediately (so cache_dirs does not prevent stopping the array)
+#               - Added file-count and depth adjustment by filecount
+# arberg
 ####################################################################################
-version=2.1.1
-program_name=`basename $0`
-program_dir=`dirname $0`
+version=2.2.0e
+program_name=$(basename "$0")
 arg_count=$#
 
 usage() {
@@ -117,8 +127,9 @@ usage() {
 	echo " -D NN    =   sets fixed depth level and disables adaptive depth level, uses \"find -maxdepth NN\" "
 	echo " -t NN    =   time in seconds between scheduled scan towards max depth, default weekly; this setting is only relevant with adaptive scan enabled (without -D setting)"
 	echo " -c command = use command instead of \"find\" "
-	echo "              ("command" should be quoted if it has embedded spaces)"
+	echo "              (\"command\" should be quoted if it has embedded spaces)"
 	echo " -a args  =   append args to command"
+#TODO remove -u
 	echo " -u       =   also scan /mnt/user (scan user shares)"
 	echo " -e exclude_dir  (may be repeated as many times as desired)"
 	echo " -i include_dir  (may be repeated as many times as desired)"
@@ -130,10 +141,12 @@ usage() {
 
 background=yes
 verbose=no
+# min scan seconds ignored, always sleep max, because it always tended towards min_seconds anyway and seems unnecessary
 min_seconds=1
 max_seconds=10
 short_log=no
-maxdepth=9999
+maxDepthUnbounded=9999
+maxDepth="$maxDepthUnbounded"
 fixdepth=-1
 command="find"
 window_array_length=20
@@ -148,12 +161,26 @@ args="-noleaf"
 concise_log="no"
 run_log="/var/log/cache_dirs.log"
 lost_cache_log="/var/log/cache_dirs_lost_cache.log"
-scan_timeout_sec_initial=600
-scan_timeout_sec_final=20
+# When min_disk_idle_before_restarting_scan_sec was 4 it restarting scanning too soon
+min_disk_idle_before_restarting_scan_sec=20
+# scan_timeout_sec_stable used for busy rescan and stable scan, scan_timeout_sec_idle used for initial on disks idle scan
+scan_timeout_sec_busy=30
+scan_timeout_sec_idle=100
+scan_timeout_sec_stable=20
 scan_judge_as_failure_sec=10
-# Adaptively increase depth by 1 until depth_max_incremental_depth, then go to 9999
+# Adaptively increase depth by 1 until depth_max_incremental_depth, then go to $maxDepth
 depth_max_incremental_depth=20
 frequency_of_full_depth_scan_sec=$((7*24*3600))
+MODE_IDLE_RESCANNING=1
+MODE_BUSY_RESCANNING=2
+MODE_STABLE=3
+mode=$MODE_BUSY_RESCANNING
+no_idle_scans_increase_depth=3
+no_busy_scans_increase_depth=50
+# no_slow_scans_decrease_depth was 3 and timeout=600, giving 30 minutes to read all dirs. I think that was sometimes necessary to read all, but also gives the program so much time that it will inevitably sometimes spam disks a lot when it cannot cache everything successfully. We could have separate modes for busy and idle scan, but for now I go with simplicity
+no_slow_scans_decrease_depth_idle=4
+no_slow_scans_decrease_depth_busy=2
+no_slow_scans_decrease_depth_stable=1
 
 ulimit_mem=50000
 
@@ -171,55 +198,57 @@ NANO_PR_SEC=1000000000
 cache_pressure=10
 
 verbose_echo() {
-	[ $background = "no" -a $verbose = "yes" ] && echo $1
+	[ $background = "no" ] && [ $verbose = "yes" ] && echo "$1"
 }
 
 log() {
-	[ $background = "no" -a $verbose = "yes" ] && echo $*
-	[ "$run_log" != "" -a -f "$run_log" ] && echo $* >> $run_log
+	[ $background = "no" ] && [ $verbose = "yes" ] && echo "$*"
+	[ "$run_log" != "" ] && [ -f "$run_log" ] && echo "$*" >> $run_log
 }
 
 logLostCache() {
-	if [ "$lost_cache_log" != "" -a -f "$lost_cache_log" ] ; then
+	if [ "$lost_cache_log" != "" ] && [ -f "$lost_cache_log" ] ; then
 		for var in "$@"
 		do
-			echo -n -e "$var\t"
+			echo -n -e "$var\\t"
 		done >> $lost_cache_log
 		echo >> $lost_cache_log
 	fi
 }
 
 logLostCacheHeader() {
-	if [ "$lost_cache_log" != "" -a -f "$lost_cache_log" ] ; then
-		echo -e "Date\tTime\tScanTime\tPrevSleep\tIdleTimeBeforeScan\tDepth\tForcedRestartDepthScan" >> $lost_cache_log
+	if [ "$lost_cache_log" != "" ] && [ -f "$lost_cache_log" ] ; then
+		echo -e "Date\\tTime\\tScanTime\\tPrevSleep\\tIdleTimeBeforeScan\\tDepth\\tForcedRestartDepthScan" >> $lost_cache_log
 	fi
 }
 
 syslog() {
-	[ $background = "no" ] && echo $1
-	[ "$run_log" != "" -a -f "$run_log" ] && echo $1 >> $run_log
-	echo $1 | logger -t$program_name
+	[ $background = "no" ] && echo "$1"
+	[ "$run_log" != "" ] && [ -f "$run_log" ] && echo "$1" >> $run_log
+	echo "$1" | logger "-t$program_name"
 }
 
-while getopts ":p:m:M:Fvc:d:D:e:qi:szl:BbwuVa:SU:t:" opt; do
+while getopts ":p:m:M:Fvc:d:D:e:qi:szl:BbwuVah:SU:t:" opt; do
 	case $opt in
 	m ) min_seconds=$OPTARG ;;
 	M ) max_seconds=$OPTARG ;;
 	F ) background=no ;;
 	v ) verbose=yes ;;
-	V ) echo $program_name version: $version
-	  exit 0 ;;
+	V ) echo "$program_name version: $version"
+		exit 0 ;;
 	u )  user_share_dir="/mnt/user" ;;
 	c ) command="$OPTARG" ;;
 	a ) args="$OPTARG" ;;
-	d ) maxdepth=$OPTARG
-	  command="find" ;;
+	d ) maxDepth=$OPTARG
+		(( maxDepth <= depth_max_incremental_depth )) && depth_max_incremental_depth=$((maxDepth - 1))
+		(( depth_max_incremental_depth == 0 )) && depth_max_incremental_depth=1
+		command="find" ;;
 	D ) fixdepth=$OPTARG
-	  command="find" ;;
+		command="find" ;;
 	i ) include_array[$include_array_count]="$OPTARG"
-	  include_array_count=$(($include_array_count+1)) ;;
+		include_array_count=$((include_array_count+1)) ;;
 	e ) exclude_array[$exclude_array_count]="$OPTARG"
-	  exclude_array_count=$(($exclude_array_count+1)) ;;
+		exclude_array_count=$((exclude_array_count+1)) ;;
 	h ) usage >&2 ; exit ;;
 	p ) cache_pressure="$OPTARG" ;;
 	U ) ulimit_mem="$OPTARG" ;;
@@ -264,23 +293,24 @@ while getopts ":p:m:M:Fvc:d:D:e:qi:szl:BbwuVa:SU:t:" opt; do
 	esac
 done
 
-#Try to play nice
-if [ "$ulimit_mem" -gt 0 ] ; then
-	log "Setting Memory ulimit to $ulimit_mem"
-	ulimit -v $ulimit_mem
-else
-	log "No Memory ulimit applied"
-fi
-
-log "Setting maxdepth=$maxdepth"
+# We need to use it with -KILL
+killtree() {
+    local _pid=$1
+    local _sig=${2:--TERM}
+    kill -stop ${_pid} # needed to stop quickly forking parent from producing children between child killing and parent killing
+    for _child in $(ps -o pid --no-headers --ppid ${_pid}); do
+        killtree ${_child} ${_sig}
+    done
+    kill ${_sig} ${_pid}
+}
 
 lockfile="/var/lock/cache_dirs.LCK"
 if [ -f "${lockfile}" ] ; then
 	# The file exists so read the PID
 	# to see if it is still running
-	lock_pid=`head -n 1 "${lockfile}"`
+	lock_pid=$(head -n 1 "${lockfile}")
 
-	pid_running=`ps -p "${lock_pid}" | grep ${lock_pid}`
+	pid_running=$(ps -p "${lock_pid}" | grep ${lock_pid})
 
 	if [ -z "${pid_running}" ] ; then
 		if [ "$quit_flag" = "no" ] ; then
@@ -292,20 +322,18 @@ if [ -f "${lockfile}" ] ; then
 			rm "${lockfile}"
 			exit 0
 		fi
-	  else
+	else
 		if [ "$quit_flag" = "yes" ] ; then
 			syslog "Stopping $program_name process $lock_pid"
-			# 1. Remove lock-file so we don't spawn new find-processes 2. kill current find-sub-process 3. Kill parent process
+			# 1. Remove lock-file so we don't spawn new find-processes
 			rm "${lockfile}"
-			pid_child=$(pgrep -P "$lock_pid")
-			[ -n "${pid_child}" ] && kill "$pid_child"
-			kill "$lock_pid"
+			killtree "$lock_pid" -KILL
 			exit 0
 		else
 			echo "$program_name is already running [${lock_pid}]"
 			exit 2
 		fi
-	  fi
+	fi
 else
 	if [ "$quit_flag" = "yes" ] ; then
 		echo "$program_name not currently running "
@@ -314,6 +342,16 @@ else
 		echo $$ > "${lockfile}"
 	fi
 fi
+
+log "$program_name version $version"
+#Try to play nice
+if [ "$ulimit_mem" -gt 0 ] ; then
+	log "Setting Memory ulimit to $ulimit_mem"
+	ulimit -v "$ulimit_mem"
+else
+	log "No Memory ulimit applied"
+fi
+log "Setting maxdepth=$maxDepth"
 
 # validate the cache pressure
 cc="$(echo $cache_pressure | sed 's/[0-9]//g')"
@@ -344,8 +382,8 @@ if [ $max_seconds -lt $min_seconds ] ; then
 	exit 2
 fi
 
-# validate the maxdepth
-cc="$(echo $maxdepth | sed 's/[0-9]//g')"
+# validate the maxDepth
+cc="$(echo $maxDepth | sed 's/[0-9]//g')"
 if [ ! -z "$cc" ] ; then
 	echo "error: directory scan maxdepth must be numeric." >&2
 	usage >&2
@@ -358,84 +396,67 @@ if [ ! -z "$cc" ] ; then
 	exit 2
 fi
 
-shift $(($OPTIND - 1))
+shift $((OPTIND - 1))
 
-# start out in the middle of the range allowed.
-num_seconds=$((( $max_seconds + $min_seconds ) / 2 ))
+# start out in the middle of the range allowed
+#num_seconds=$((( $max_seconds + $min_seconds ) / 2 ))
+num_seconds=$max_seconds
 
 log "Setting cache_pressure=$cache_pressure"
 sysctl vm.vfs_cache_pressure=$cache_pressure >/dev/null 2>&1
 
+# use function like this: result=$(fnc_time_since_last_disk_access)
 fnc_time_since_last_disk_access() {
-	# Check if the array is started
-	time_since_last_disk_access_sec=9999
+	# check if array is mounted by checking for disk1 directory
 	if [ -d /mnt/disk1 ] ; then
 		mdcmd_cmd=/usr/local/sbin/mdcmd
 
 		# rdevLastIO will be non-zero if a disk is spinning, it will be the timestamp of last IO (in seconds since epoch)
 		last=$($mdcmd_cmd status | grep -a rdevLastIO | grep -v '=0')
-		time_since_last_disk_access_sec=$(echo $last | awk '{t=systime(); gsub("rdevLastIO..=",""); for(i = 1; i <= NF; i++) a[++y]=$i}END{c=asort(a); if (NF > 0) print t-a[NF]; else print 9999; }')
-
+		echo "$(echo $last | awk '{t=systime(); gsub("rdevLastIO..=",""); for(i = 1; i <= NF; i++) a[++y]=$i}END{c=asort(a); if (NF > 0) print t-a[NF]; else print 9999; }')"
 		# Code to log all disk ages
 		# ages=$(echo $last | awk '{ t=systime(); for(i = 1; i <= NF; i++){ match($i, /rdevLastIO.([0-9]+)/, capgroups); gsub("rdevLastIO..=","", $i);  print capgroups[1] "=" t-$i } }') #print "diskage" i "=" t-$i
 		# log "Ages: $ages"
+	else
+		# Array is not started
+		echo "9999"
 	fi
 }
 
-sleepAndCheckAreDisksIdle() {
-	sleep 5
-	fnc_time_since_last_disk_access
-	are_disks_idle=$((time_since_last_disk_access_sec >= 4))
+depthMinusOne() {
+	depth=$1
+	if (( depth == 1 )) ; then
+		echo 1
+	elif (( depth == maxDepth)) ; then
+		echo "$depth_max_incremental_depth"
+	else
+		echo $(( depth - 1 ))
+	fi
 }
 
+depthMinusMany() {
+	depth="$1"
+	local filesAtDepth="${files_at_depth_map[$depth]}"
+	local depth_minus_one_value
+	depth_minus_one_value=$(depthMinusOne "$depth")
+	local result=1
+	for ((i=depth_minus_one_value; i > 1; i--)) ; do
+		# bash need $ on $appliedDepth inside hashmap inside (())
+		if (( files_at_depth_map[$i] <= filesAtDepth*4/5 )); then
+			result=$i
+			break;
+		fi
+	done
+	echo "$result"
+}
 
-do_deep_scan() {
-	depth_num=$1
-	scan_timout=$2
-	depth_arg=""
-	[ "$depth_num" -ne 9999 ] && depth_arg="-maxdepth $depth_num"
-	scanned_depth_msg+=" depth $depth_num"
-	is_last_depth_scan_timed_out=0
-	scan_start=`date +%s%N`
-	share_disks_scanned_cnt=0
-	while read share_dir
-	do
-		for i in /mnt/disk* /mnt/cache $user_share_dir
-		do
-			# If the directory does not exist on this disk, don't do recursive "directory scan"
-			[ ! -d "$i"/"$share_dir" ] && continue
-
-			# if lockfile removed, then don't do new finds
-			[ ! -f "$lockfile" ] && continue
-			(( is_last_depth_scan_timed_out )) && continue
-
-			current_time_nano=`date +%s%N`
-			# +1 to timeout because this is an integer computation
-			remaining_time=$(( ((scan_timout+1)*NANO_PR_SEC-(current_time_nano-scan_start) ) / NANO_PR_SEC ))
-			timepassed=$(( (current_time_nano-scan_start) / NANO_PR_SEC ))
-
-			exitstatus=0
-			# Perform a recursive "find" on /mnt/disk??/share, or /mnt/user/share, or /mnt/cache/share
-			if (( remaining_time > 0 )) ; then
-				((share_disks_scanned_cnt++))
-				if [ -f /bin/timeout ] ; then
-					# Stop scan after n seconds. Should actually decrease wait-duration based on previous shares scan-time
-					/bin/timeout $remaining_time $command "$i"/"$share_dir" $args $depth_arg >/dev/null 2>&1
-				else
-					$command "$i"/"$share_dir" $args $depth_arg >/dev/null 2>&1
-				fi
-				exitstatus=$?
-			else
-				is_last_depth_scan_timed_out=1
-				scanned_depth_msg+="(timeout ${scan_timout}s)"
-			fi
-			if [ $exitstatus -ne 0 ] ; then
-				is_last_depth_scan_timed_out=1
-				scanned_depth_msg+="(timeout ${scan_timout}s:Error=$exitstatus)"
-			fi
-			verbose_echo "$start_time_txt Executing $command $i/$share_dir $args $depth_arg"
-		done
-	done < <(echo "$dir_list")
+depthPlusOne() {
+	depth=$1
+	if (( depth == depth_max_incremental_depth || depth == maxDepth )) ; then
+		echo "$maxDepth"
+	else
+		echo $(( depth + 1 ))
+	fi
 }
 
 build_dir_list() {
@@ -451,11 +472,11 @@ build_dir_list() {
 		do
 			included_excl=$(find /mnt/disk* /mnt/cache -type d -maxdepth 1 -mindepth 1 -name "${include_array[$a]}" -exec basename {} \; 2>/dev/null)
 			echo "$included_excl" | sort -u
-			a=$(($a+1))
+			a=$((a+1))
 		done
 		)| sort -u`
 	else
-		top_dirs=`find /mnt/disk* /mnt/cache -type d -maxdepth 1 -mindepth 1  -exec basename {} \; 2>/dev/null|sort -u`
+		top_dirs=$(find /mnt/disk* /mnt/cache -type d -maxdepth 1 -mindepth 1  -exec basename {} \; 2>/dev/null | sort -u)
 	fi
 	exclude_dirs=`(
 		# Exclude designated directories from being processed
@@ -464,16 +485,149 @@ build_dir_list() {
 		do
 			expanded_excl=$(find /mnt/disk* /mnt/cache -type d -maxdepth 1 -mindepth 1 -name "${exclude_array[$a]}" -exec basename {} \; 2>/dev/null)
 			echo "$expanded_excl" | sort -u
-			a=$(($a+1))
+			a=$((a+1))
 		done
 	)| sort -u`
-	scan_dirs=`comm -23 <(echo "$top_dirs") <(echo "$exclude_dirs")`
+	scan_dirs=$(comm -23 <(echo "$top_dirs") <(echo "$exclude_dirs"))
 	echo "$scan_dirs"
 }
 
 function join { local IFS="$1"; shift; echo "$*"; }
 
-dir_list=`build_dir_list`
+
+# get exit code for sub processes running find
+set -m # allow for job control
+function handleJobs() {
+	for job in $(jobs -p); do
+		CODE=0;
+		if (( job != background_pid )) ; then
+			# TODO CLEANUP #
+			log "Wait for PID=$job"
+			wait ${job} || CODE=$?
+			if [[ "${CODE}" != "0" ]]; then
+				echo "At least one test failed with exit code => ${CODE}" ;
+				LAST_EXIT_CODE=${CODE};
+			fi
+		fi
+	done
+}
+trap 'handleJobs' CHLD  # trap command is the key part
+
+do_deep_scan() {
+	LAST_EXIT_CODE=0;  # exit code of overall script
+	depth_num=$1
+	scan_timeout=$2
+	depth_arg=""
+	[ "$depth_num" -ne "$maxDepthUnbounded" ] && depth_arg="-maxdepth $depth_num"
+	scanned_depth_msg+=" depth $depth_num"
+	is_last_depth_scan_timed_out=0
+	# will update dir_list on each scan, in case new shares have been added
+	dir_list=$(build_dir_list)
+	scan_start=$(date +%s%N)
+	# TODO $user_share_dir
+	for i in /mnt/disk* /mnt/cache 
+	do
+		{
+			for share_dir in $dir_list
+			do
+				dir_to_scan="$i/$share_dir"
+				# if lockfile removed, then don't do new finds
+				[ ! -f "$lockfile" ] && continue
+				(( is_last_depth_scan_timed_out )) && continue
+
+				# If the directory does not exist on this disk, don't do recursive "directory scan"
+				[ ! -d "$dir_to_scan" ] && continue
+
+				current_time_nano=$(date +%s%N)
+				# +1 to timeout because this is an integer computation
+				remaining_time=$(( ((scan_timeout+1)*NANO_PR_SEC-(current_time_nano-scan_start) ) / NANO_PR_SEC ))
+				# Debug logging
+				#log "scanning $depth_num $i/$share_dir - remaining_time=$remaining_time - pid=$!"
+				#verbose_echo "$start_time_txt Executing $command $i/$share_dir $args $depth_arg"
+				if (( remaining_time > 0 )) ; then
+					# Perform a recursive "find" on /mnt/disk??/share, or /mnt/user/share, or /mnt/cache/share
+					if [ -f /bin/timeout ] ; then
+						# Stop scan after n seconds. Should actually decrease wait-duration based on previous shares scan-time
+						# Note timeout changes the pgid of its process, so cannot kill it using pgid
+						/bin/timeout $remaining_time $command "$dir_to_scan" $args $depth_arg >/dev/null 2>&1
+					else
+						$command "$dir_to_scan" $args $depth_arg >/dev/null 2>&1
+					fi
+				fi
+			done
+		} &
+	done
+	wait; # wait for all subshells to finish
+	current_time_nano=$(date +%s%N)
+	timepassed_total=$(( (current_time_nano - scan_start) / NANO_PR_SEC ))
+	#log "total: $timepassed_total / $scan_timeout"
+	if (( timepassed_total >= scan_timeout )) ; then
+		is_last_depth_scan_timed_out=1
+		scanned_depth_msg+="(timeout ${scan_timeout}s)"
+	fi
+	if [ $LAST_EXIT_CODE -ne 0 ] ; then
+		is_last_depth_scan_timed_out=1
+		scanned_depth_msg+="(timeout ${scan_timeout}s:Error=$LAST_EXIT_CODE)"
+	fi
+}
+
+# function: exists key in map
+exists() {
+  if [ "$2" != in ]; then
+    echo "Incorrect usage."
+    echo "Correct usage: exists {key} in {array}"
+    echo "examlpe1:  if exists $i in files_at_depth_map; then echo \"It exists\" ; fi"
+    echo "examlpe1a: exists $i in files_at_depth_map && echo \"It exists\""
+    echo "examlpe2: if ! exists $i in files_at_depth_map; then echo \"Note there\" ; fi"
+    return
+  fi   
+  eval '[ ${'$3'[$1]+muahaha} ]'  
+}
+
+count_files() {
+	local depth_arg=""
+	[ "$1" -ne "$maxDepthUnbounded" ] && depth_arg="-maxdepth $1"
+	totalCount=0 
+	for i in /mnt/disk* /mnt/cache ; do
+		for share_dir in $dir_list ; do
+			dir_to_scan="$i/$share_dir"
+			if [ -d "$dir_to_scan" ] ; then
+				local thisDirCount=$(find $dir_to_scan -type f $depth_arg | wc -l)
+				totalCount=$((totalCount+thisDirCount))
+			fi
+		done
+	done 
+	echo "$totalCount"
+}
+
+# does not work as function that echo result, missing cpu_last
+# First cpu measurement will be wrong, missing last
+update_cpu_usage() {
+	cpu_now=($(head -n1 /proc/stat)) 
+	# Get all columns but skip the first (which is the "cpu" string) 
+	cpu_sum="${cpu_now[@]:1}" 
+	# Replace the column seperator (space) with + 
+	cpu_sum=$((${cpu_sum// /+})) 
+	# Get the delta between two reads 
+	cpu_delta=$((cpu_sum - cpu_last_sum)) 
+	# Get the idle time Delta 
+	cpu_idle=$((cpu_now[4]- cpu_last[4])) 
+	# Calc time spent working 
+	cpu_used=$((cpu_delta - cpu_idle)) 
+	# Calc percentage 
+	cpu_usage=$((100 * cpu_used / cpu_delta)) 
+
+    # Keep this as last for our next read 
+    cpu_last=("${cpu_now[@]}") 
+    cpu_last_sum=$cpu_sum
+}
+
+format_two_digit() {
+	echo "$(echo $1 | awk '{input=$1} END {printf "%2.0f", input}')"
+}
+
+# will update dir_list on each scan, in case new shares have been added
+dir_list=$(build_dir_list)
 
 if [ "$short_log" = "no" ] ; then
 	log_list="$dir_list"
@@ -484,32 +638,32 @@ fi
 
 if ((fixdepth == -1)) ; then
 	scan_type="adaptive"
-	scan_depth=$maxdepth
+	scan_depth=$maxDepth
 else
 	scan_type="fixed"
 	scan_depth=$fixdepth
 fi
 
-if ((scan_depth == 9999)) ; then
+if ((scan_depth == maxDepth)) ; then
 	scan_depth="none"
 fi
 
 if [ "$concise_log" = "no" ] ; then
-	echo "==============================================" | logger -t$program_name
-	echo "Starting $program_name:" | logger -t$program_name
-	echo "Arguments=$commandargs" | logger -t$program_name
-	echo "Cache Pressure=$cache_pressure" | logger -t$program_name
-	echo "Max Scan Secs=$max_seconds, Min Scan Secs=$min_seconds" | logger -t$program_name
-	echo "Scan Type=$scan_type" | logger -t$program_name
-	echo "Max Scan Depth=$scan_depth" | logger -t$program_name
-	echo "Use Command='$command $args'" | logger -t$program_name
-	echo "Version=$version" | logger -t$program_name
-	echo "---------- Caching Directories ---------------" | logger -t$program_name
-	echo "$log_list" | logger -t$program_name
-	echo "----------------------------------------------" | logger -t$program_name
+	echo "==============================================" | logger "-t$program_name"
+	echo "Starting $program_name:" | logger "-t$program_name"
+	echo "Arguments=$commandargs" | logger "-t$program_name"
+	echo "Cache Pressure=$cache_pressure" | logger "-t$program_name"
+	echo "Max Scan Secs=$max_seconds, Min Scan Secs=$min_seconds (min scan seconds ignored, always sleep max)" | logger "-t$program_name"
+	echo "Scan Type=$scan_type" | logger "-t$program_name"
+	echo "Max Scan Depth=$scan_depth" | logger "-t$program_name"
+	echo "Use Command='$command $args'" | logger "-t$program_name"
+	echo "Version=$version" | logger "-t$program_name"
+	echo "---------- Caching Directories ---------------" | logger "-t$program_name"
+	echo "$log_list" | logger "-t$program_name"
+	echo "----------------------------------------------" | logger "-t$program_name"
 else
-	echo "Arguments=$commandargs, Version=$version, Cache Pressure=$cache_pressure, Max Scan Secs=$max_seconds, Min Scan Secs=$min_seconds, Scan Type=$scan_type, Max Depth=$scan_depth, Use Command='$command $args'" | paste -s -d "," - | logger -t$program_name
-	echo "$log_list" | paste -s -d "," - | logger -t$program_name
+	echo "Arguments=$commandargs, Version=$version, Cache Pressure=$cache_pressure, Max Scan Secs=$max_seconds, Min Scan Secs=$min_seconds, Scan Type=$scan_type, Max Depth=$scan_depth, Use Command='$command $args'" | paste -s -d "," - | logger "-t$program_name"
+	echo "$log_list" | paste -s -d "," - | logger "-t$program_name"
 fi
 log "Setting Included dirs $(join , ${include_array[@]})"
 log "Setting Excluded dirs $(join , ${exclude_array[@]})"
@@ -520,51 +674,73 @@ logLostCacheHeader
 a=0
 while test $a -lt $exclude_array_count
 do
-	list=`eval ls /mnt/disk*/"${exclude_array[$a]}" /mnt/cache/"${exclude_array[$a]}" 2>/dev/null`
+	list=$(eval ls /mnt/disk*/"${exclude_array[$a]}" /mnt/cache/"${exclude_array[$a]}" 2>/dev/null)
 	if [ "$list" = "" ] ; then
 		echo "ERROR: excluded directory \"${exclude_array[$a]}\" does not exist." >&2
-		echo "ERROR: excluded directory \"${exclude_array[$a]}\" does not exist." | logger -t$program_name
+		echo "ERROR: excluded directory \"${exclude_array[$a]}\" does not exist." | logger "-t$program_name"
 	fi
-	a=$(($a+1))
+	a=$((a+1))
 done
 
 a=0
 while test $a -lt $include_array_count
 do
-	list=`eval ls /mnt/disk*/"${include_array[$a]}" /mnt/cache/"${include_array[$a]}" 2>/dev/null`
+	list=$(eval ls /mnt/disk*/"${include_array[$a]}" /mnt/cache/"${include_array[$a]}" 2>/dev/null)
 	if [ "$list" = "" ] ; then
 		echo "ERROR: included directory \"${include_array[$a]}\" does not exist." >&2
-		echo "ERROR: included directory \"${include_array[$a]}\" does not exist." | logger -t$program_name
+		echo "ERROR: included directory \"${include_array[$a]}\" does not exist." | logger "-t$program_name"
 	fi
-	a=$(($a+1))
+	a=$((a+1))
 done
 
+function get_scan_timeout() {
+	if ((fixdepth >= 0)) ; then
+		echo "${scan_timeout_sec_idle}"
+	elif (( mode == MODE_IDLE_RESCANNING )) ; then
+		echo "${scan_timeout_sec_idle}"
+	elif (( mode == MODE_BUSY_RESCANNING )) ; then
+		echo "${scan_timeout_sec_busy}"
+	elif (( mode == MODE_STABLE )) ; then
+		echo "${scan_timeout_sec_stable}"
+	else
+		log "Error unknown mode $mode"
+		echo "${scan_timeout_sec_stable}"
+	fi
+}
+
 # Internal vars
+# isPreviousMaxDepthComputed will be true(1) if we have reached the depth we currently think of as our max depth, ie. appliedDepth == appliedMaxDepth
+# - appliedMaxDepth is computed once, and after that we always try to regain that depth, which would cause load on system, unless we wait for idle disks I suppose
 depth_success_idle_incr_counter=0
 depth_success_busy_incr_counter=0
 depth_failure_incr_counter=0
 if ((fixdepth >= 0)) ; then
-	applieddepth=$fixdepth
-	maxdepth=$fixdepth
-	is_stable_depth_reached=1
-	scan_timeout_sec=${scan_timeout_sec_final}
+	appliedDepth=$fixdepth
+	maxDepth=$fixdepth
+	isPreviousMaxDepthComputed=1
+	scan_timeout_sec=${scan_timeout_sec_idle}
 else
-	applieddepth=0
-	scan_timeout_sec=${scan_timeout_sec_initial}
-	is_stable_depth_reached=0
+	appliedDepth=1
+	scan_timeout_sec=${scan_timeout_sec_busy}
+	isPreviousMaxDepthComputed=0
 fi
 
-appliedmaxdepth=$maxdepth
+# invariant appliedMaxDepthCurrent < appliedMaxDepth <= maxDepth
+# appliedMaxDepthCurrent: Current stable set, will be increased after long disk idle
+# appliedMaxDepth: Best seen appliedMaxDepth, reset once a week
+# maxDepth: User configured max depth
+appliedMaxDepth=$maxDepth
+appliedMaxDepthCurrent=$appliedMaxDepth
 last_scan_towards_max_depth=$(date +%s)
+is_last_depth_scan_timed_out=0
+	
+declare -A files_at_depth_map
 
-# max allowed scans with disk-access before we stop/decrease depth
-max_no_disk_access_scans=3
 while [ -f "$lockfile" ]
 do
-	is_last_depth_scan_timed_out=0
 	if [ "$suspend_during_mover" = "yes" ] ; then
 		if [ -f /var/run/mover.pid ] ; then
-			if ps h `cat /var/run/mover.pid` | grep mover >/dev/null 2>&1 ; then
+			if ps h $(cat /var/run/mover.pid) | grep mover >/dev/null 2>&1 ; then
 				log "Suspended during moving, now sleeping 10 seconds"
 				sleep 10
 				continue
@@ -572,43 +748,56 @@ do
 		fi
 	fi
 
-	start_time_nano=`date +%s%N`
-	start_time_txt=`date "+%Y.%m.%d %H:%M:%S"`
-
-	fnc_time_since_last_disk_access
-	time_since_disk_access_before_scan_sec=${time_since_last_disk_access_sec}
-
 	# always cache root dirs on each of the disks
 	for i in /mnt/disk* /mnt/cache $user_share_dir
 	do
 		find $i -maxdepth 1 -noleaf >/dev/null 2>/dev/null
 	done
 
-	scanned_depth_msg=""
-
 	############## Here the actual find is executed ################
-	do_deep_scan $applieddepth $scan_timeout_sec
+	start_time_nano=$(date +%s%N)
+	start_time_txt=$(date "+%Y.%m.%d %H:%M:%S")
+	time_since_disk_access_before_scan_sec=$(fnc_time_since_last_disk_access)
+
+	scan_timeout_sec=$(get_scan_timeout)
+	scanned_depth_msg=""
 	# I tried rescan at lower depth if scan timed out, but it hurt cache, some depth levels were unattainable with the lower depth scan enabled, they must have evicted higher depth cache for some reason
+	do_deep_scan $appliedDepth $scan_timeout_sec
+	# Count number of files at depth, the first time depth is used
+	if ! exists "$appliedDepth" in files_at_depth_map ; then
+		# start_time_nano_filecount=$(date +%s%N)
+		files_at_depth_map[$appliedDepth]+="$(count_files $appliedDepth)"
+		# end_time_nano_filecount=$(date +%s%N)
+		# elapsed_time_filecount_ms=$(( (end_time_nano_filecount - start_time_nano_filecount) / 1000000 ))
+		# log "File count at depth $depth duration ${elapsed_time_filecount_ms}ms: files=${files_at_depth_map[$appliedDepth]}"
+		if ((appliedDepth == maxDepth)) ; then
+			depth_max_incremental_depth=$(depthMinusMany $maxDepth)
+			log "depth_max_incremental_depth=$depth_max_incremental_depth"
+			# log "depthMinusMany($maxDepth)=$(depthMinusMany $maxDepth)"
+			# for ((i=1; i < 20; i++)) ; do
+			# 	# bash need $ on $appliedDepth inside hashmap inside (())
+			# 	log "depthMinusMany($i)=$(depthMinusMany $i)"
+			# done
+		fi
+	fi
 
-	fnc_time_since_last_disk_access
-	time_since_disk_access_after_scan_sec=${time_since_last_disk_access_sec}
-
-	end_time_nano=`date +%s%N`
+	time_since_disk_access_after_scan_sec=$(fnc_time_since_last_disk_access)
+	end_time_nano=$(date +%s%N)
 
 	# track how long the recursive "directory scan" is taking.  If it starts to take longer it must be
 	# because it has to read more from the physical disk.  If so, adjust the timing to
 	# perform the directory scan more frequently.
 	elapsed_time=$(( end_time_nano-start_time_nano ))
-	elapsed_secs=$(( elapsed_time/NANO_PR_SEC ))
+	elapsed_secs=$(( elapsed_time / NANO_PR_SEC ))
 	were_disks_idle_during_scan=$((time_since_disk_access_after_scan_sec>=elapsed_secs))
 
 	# Only update avg scan time when disks were idle during scan. This gives us ability to judge whether disks were accessed due to cache_dirs scan even if other processes access disks
 	if (( were_disks_idle_during_scan )) ; then
 		alen=${#avg[@]}
 		# Move all the counts up one position in the array.
-		for (( i = $(($alen)) ; i > 0 ; i-- ))
+		for (( i = alen ; i > 0 ; i-- ))
 		do
-			[ $i -lt $window_array_length ] && avg[$(($i+1))]=${avg[$i]}
+			[ $i -lt $window_array_length ] && avg[$((i+1))]=${avg[$i]}
 		done
 
 		# The newest will always be stored at index 1
@@ -620,27 +809,29 @@ do
 		alen=${#avg[@]}
 
 		tot_count=0
-		for (( i = 1; i <= $alen; i++ ))
+		for (( i = 1; i <= alen; i++ ))
 		do
-			weight=$(( $alen - $i + 1 ))
-			weight=$(( $weight * 3 ))
-			tot_count=$(( $tot_count + $weight))
-			tot_time=$(( $tot_time + $(( ${avg[$i]} * $weight ))))
+			weight=$(( alen - i + 1 ))
+			weight=$(( weight * 3 ))
+			tot_count=$(( tot_count + weight))
+			tot_time=$(( tot_time + avg[i] * weight ))
 		done
-		avg_elapsed_time=$(($tot_time/$tot_count))
+		avg_elapsed_time=$((tot_time/tot_count))
+	elif [ $avg_elapsed_time -eq 0 ] ; then
+		avg_elapsed_time=$elapsed_time
 	fi
 
-	[ $avg_elapsed_time -eq 0 ] && avg_elapsed_time=$elapsed_time
+	# Only decrease sleep when non-idle scan, note avg is computed over scan with idle disks, but not necessary at current depth level
+	if (( !were_disks_idle_during_scan && avg_elapsed_time * 3 < elapsed_time && num_seconds > min_seconds )) ; then
+		num_seconds=$min_seconds
+	fi
+	if (( avg_elapsed_time + NANO_PR_SEC > elapsed_time && num_seconds < max_seconds )) ; then
+		num_seconds=$max_seconds
+	fi
 
-	# Only decrease sleep when non-idle scan
-	((were_disks_idle_during_scan)) && [ $avg_elapsed_time -lt $(($elapsed_time+100000)) -a $num_seconds -gt $min_seconds ] && num_seconds=$(($num_seconds-1))
-	[ $avg_elapsed_time -gt $(($elapsed_time-100000)) -a $num_seconds -lt $max_seconds ] && num_seconds=$(($num_seconds+1))
-
-	avg_elapsed_secs=$(( $avg_elapsed_time/1000000000 ))
 
 	log_disk_access_msg=""
 
-	do_sleep_until_disks_idle=0
 	current_time_sec=$(date +%s)
 	skip_sleep=0
 	if ((fixdepth == -1)) ; then
@@ -654,15 +845,17 @@ do
 			if (( elapsed_time <= avg_elapsed_time + 2*NANO_PR_SEC )) ; then
 				# depth_failure_incr_counter because we suspect its a scan which didn't access disks, since scan time was as fast as usual.
 				depth_failure_incr_counter=0
-				log_disk_access_msg="NonIdleUsualTime"
+				log_disk_access_msg="NonIdleFast_____"
 			else
 				log_disk_access_msg="NonIdleSlowerAvg"
 			fi
 			((depth_success_busy_incr_counter++))
 		else
 			log_disk_access_msg="NonIdleTooSlow__"
-			# Alex clean up (bug here? hence the log)
-			log "Idle (or unknown): $elapsed_secs < $scan_judge_as_failure_sec && ! $is_last_depth_scan_timed_out || $time_since_disk_access_after_scan_sec>=$elapsed_secs"
+			if ((elapsed_secs < scan_judge_as_failure_sec)) ; then
+				# Alex clean up (bug here? hence the log)
+				log "NonIdleTooSlow because !were_disks_idle_during_scan ($were_disks_idle_during_scan) and !(elapsed_secs < scan_judge_as_failure_sec && ! is_last_depth_scan_timed_out), elapsed_secs=$elapsed_secs, scan_judge_as_failure_sec=$scan_judge_as_failure_sec, is_last_depth_scan_timed_out=$is_last_depth_scan_timed_out"
+			fi
 			logLostCache $start_time_txt ${elapsed_secs} ${prev_sleep_duration} ${time_since_disk_access_before_scan_sec} $depth_num 0
 			# timeout
 			((depth_failure_incr_counter++))
@@ -670,89 +863,100 @@ do
 			depth_success_busy_incr_counter=0
 			skip_sleep=1
 		fi
+	fi
 
+	update_cpu_usage
+	CPU="$(format_two_digit $cpu_usage)"
+	# Note elapsed_secs is an integer, so we need to recompute it from elapsed_time in the awk command below
+	avg_text=$(awk "BEGIN{ printf \"%05.2fs, wavg=%05.2fs\n\", ($elapsed_time/$NANO_PR_SEC), ($avg_elapsed_time/$NANO_PR_SEC) ; }")
+	log "$start_time_txt Executed $command in (${elapsed_secs}s) $avg_text ${log_disk_access_msg} $scanned_depth_msg sleep ${next_sleep_duration}s Disks idle before/after ${time_since_disk_access_before_scan_sec}s/${time_since_disk_access_after_scan_sec}s suc/fail cnt=${depth_success_idle_incr_counter}/${depth_failure_incr_counter} mode=$mode scan_tmo=${scan_timeout_sec}s maxCur=$appliedMaxDepthCurrent maxWeek=$appliedMaxDepth isMaxDepthComputed=$isPreviousMaxDepthComputed CPU=${CPU}%, filecount[$appliedDepth]=${files_at_depth_map[$appliedDepth]}"
+
+	if ((fixdepth == -1)) ; then
+		time_since_last_disk_access_sec=$(fnc_time_since_last_disk_access)
+		(( time_since_last_disk_access_sec >= min_disk_idle_before_restarting_scan_sec )) && hasBeenIdleLong=1 || hasBeenIdleLong=0
+		if (( hasBeenIdleLong && mode == MODE_BUSY_RESCANNING)) ; then
+			mode=$MODE_IDLE_RESCANNING
+		fi
+		if (( mode == MODE_IDLE_RESCANNING)) ; then
+			no_slow_scans_decrease_depth=$no_slow_scans_decrease_depth_idle
+		elif (( mode == MODE_BUSY_RESCANNING)) ; then
+			no_slow_scans_decrease_depth=$no_slow_scans_decrease_depth_busy
+		else
+			no_slow_scans_decrease_depth=$no_slow_scans_decrease_depth_stable
+		fi
 		# Now increment or decrement depth level based on counters
-		if ((applieddepth < appliedmaxdepth && (depth_success_idle_incr_counter>=3 || is_stable_depth_reached && depth_success_idle_incr_counter>=1 || depth_success_busy_incr_counter > 50) )) ; then
-			# Increment depth
-			(( applieddepth++ ))
-			depth_failure_incr_counter=0
-			depth_success_idle_incr_counter=0
-			depth_success_busy_incr_counter=0
-			# skip straight to 9999 if deep enough, so we can start sleeping
-			(( applieddepth > depth_max_incremental_depth )) && applieddepth=$maxdepth
-			if (( applieddepth >= appliedmaxdepth )) ; then
-				is_stable_depth_reached=1
-				scan_timeout_sec=${scan_timeout_sec_final}
+		if (( mode != MODE_STABLE && (depth_success_idle_incr_counter >= no_idle_scans_increase_depth || depth_success_busy_incr_counter > no_busy_scans_increase_depth) || hasBeenIdleLong && depth_success_idle_incr_counter >= 1 )) ; then
+			if (( appliedDepth == maxDepth )) ; then
+				isPreviousMaxDepthComputed=1
 			fi
-		elif ((depth_failure_incr_counter >= max_no_disk_access_scans && applieddepth > 0)) ; then
+			if (( appliedDepth < appliedMaxDepthCurrent || appliedDepth < appliedMaxDepth && hasBeenIdleLong)) ; then
+				# Increment depth and check depth_max_incremental_depth: skip straight to maxDepth if deep enough, so we can start sleeping
+				appliedDepth=$(depthPlusOne $appliedDepth)
+				depth_failure_incr_counter=0
+				depth_success_idle_incr_counter=0
+				depth_success_busy_incr_counter=0
+				if (( hasBeenIdleLong && appliedDepth < appliedMaxDepth )) ; then	
+					appliedMaxDepthCurrent=$appliedMaxDepth
+					mode=$MODE_IDLE_RESCANNING
+				fi
+			elif (( appliedDepth == appliedMaxDepthCurrent )) ; then
+				mode=$MODE_STABLE
+			fi
+		elif (( appliedDepth > 0 && depth_failure_incr_counter >= no_slow_scans_decrease_depth )) ; then
 			depth_failure_incr_counter=0
 			depth_success_idle_incr_counter=0
 			depth_success_busy_incr_counter=0
-			if (( is_stable_depth_reached )) ; then
-				# Reset depth to 1: It will only increase again once we have enough idle with successive scans
-				do_sleep_until_disks_idle=1
-				scan_timeout_sec=${scan_timeout_sec_initial}
-				applieddepth=1
-			# fi
-			else
-				# Decrement max depth, because we were finding the possible stable level, so we now set the appliedmaxdepth which acts as our upper bound
-				(( applieddepth == 9999)) && appliedmaxdepth=$depth_max_incremental_depth || appliedmaxdepth=$((applieddepth-1))
-				applieddepth=$appliedmaxdepth
-				is_stable_depth_reached=1
-				scan_timeout_sec=${scan_timeout_sec_final}
-				log "Stopping at/decreasing to depth $appliedmaxdepth because previous scans have accessed disks/taken too long, will retry in $decreased_max_depth_rescan_wait_duration_sec secs"
-		 	fi
+			# Reduce max-depth
+			appliedMaxDepthCurrent=$(depthMinusOne "$appliedDepth")
+			logLostCache $start_time_txt ${elapsed_secs} ${prev_sleep_duration} ${time_since_disk_access_before_scan_sec} $depth_num 1
+			if (( mode == MODE_STABLE )) ; then			
+				appliedDepth=$(depthMinusMany "$appliedDepth")
+			else 
+				appliedDepth=$(depthMinusOne "$appliedDepth")
+				if (( !isPreviousMaxDepthComputed && mode == MODE_IDLE_RESCANNING )) ; then
+					# We were doing a scan during a time when disks have been idle, so system low was probably low. We take this to indicate this is the best depth the system can handle.
+					# Set max depth ceiling, which will be rechecked weekly. Move to stable mode, at one level below current level.
+					appliedMaxDepth=$appliedMaxDepthCurrent
+					isPreviousMaxDepthComputed=1
+				fi
+				mode=$MODE_STABLE
+			fi
+		elif (( were_disks_idle_during_scan && mode == MODE_STABLE && appliedDepth < appliedMaxDepthCurrent )) ; then
+			mode=$MODE_BUSY_RESCANNING
 		fi
 
 		# Weekly full scan: In case of reduced max depth, test if we should reset and try going deeper again
-		if ((current_time_sec > last_scan_towards_max_depth + frequency_of_full_depth_scan_sec)) ; then
-			last_scan_towards_max_depth=$current_time
-			if (( appliedmaxdepth < maxdepth )) ; then
-				log "Starting scheduled depth scan again after waiting ${frequency_of_full_depth_scan_sec}s"
-				appliedmaxdepth=$maxdepth
-				is_stable_depth_reached=0
-				scan_timeout_sec=${scan_timeout_sec_initial}
+		if (( current_time_sec > last_scan_towards_max_depth + frequency_of_full_depth_scan_sec && time_since_last_disk_access_sec >= min_disk_idle_before_restarting_scan_sec )) ; then
+			last_scan_towards_max_depth=$current_time_sec
+			if (( appliedMaxDepth < maxDepth )) ; then
+				log "Starting scheduled depth scan again after waiting ${frequency_of_full_depth_scan_sec}s - disks have been idle for ${time_since_last_disk_access_sec}s"
+				appliedMaxDepth=$maxDepth
+				isPreviousMaxDepthComputed=0
+				scan_timeout_sec=${scan_timeout_sec_idle}
 			fi
 		fi
 	fi
 
-	# Alex changed logging for applied depth and no sleep
-	# log duration
-	if [ "$background" = "no" -o "$run_log" != "" ] ; then
-		a=`awk "BEGIN{ printf \\"%05.2fs, wavg=%05.2fs\n\\", ($elapsed_time/1000000000), ($avg_elapsed_time/1000000000) ; }"`
-	fi
-	fnc_time_since_last_disk_access
-	((applieddepth == appliedmaxdepth)) && next_sleep_duration=$num_seconds || next_sleep_duration=1
-	#shareDirs scanned $share_disks_scanned_cnt
-	log "$start_time_txt Executed $command in (${elapsed_secs}s) ${a}, find_timeout=${is_last_depth_scan_timed_out} ${log_disk_access_msg}, $scanned_depth_msg, sleep ${next_sleep_duration}s, Disks idle before/after ${time_since_disk_access_before_scan_sec}s/${time_since_disk_access_after_scan_sec}s, suc/fail cnt=${depth_success_idle_incr_counter}/${depth_failure_incr_counter}, scan_tmo=${scan_timeout_sec}s max=$appliedmaxdepth stable=$is_stable_depth_reached"
-
-	if ((do_sleep_until_disks_idle)) ; then
-		log "Pause until disks are idle again"
-		logLostCache $start_time_txt ${elapsed_secs} ${prev_sleep_duration} ${time_since_disk_access_before_scan_sec} $depth_num 1
-		sleepAndCheckAreDisksIdle
-		while ((!are_disks_idle)); do
-		  sleepAndCheckAreDisksIdle
-		done
-		log "Disks are idle again, so allow more time for disk-scans to regain desired depth level scan_timeout_sec ${scan_timeout_sec} -> ${scan_timeout_sec_initial}"
-		do_sleep_until_disks_idle=0
-	elif ((!skip_sleep)) ; then
+	((appliedDepth == appliedMaxDepth)) && next_sleep_duration=$num_seconds || next_sleep_duration=1
+	# we only skip sleep when scan is taking long, so it cannot significantly change impact whether or not we sleep 1 sec. We skip sleep to help cache pressure to build
+	if ((!skip_sleep)) ; then
 		sleep ${next_sleep_duration}
 	fi
 	prev_sleep_duration=$next_sleep_duration
 done &
 
-
 # while loop was put into background, now disown it
 # so it will continue to run when you log off
 # to get it to stop, type: rm /var/lock/cache_dirs.LCK
+
 background_pid=$!
 echo $background_pid > "${lockfile}"
 if [ $background = "no" ] ; then
 	# only way to get here is to remove the lock file or kill the background process shell with the while loop
-	trap "rm -f $lockfile; kill $background_pid 2>/dev/null; exit" INT TERM EXIT
+	trap "rm -f $lockfile; killtree $background_pid -KILL 2>/dev/null; exit" INT TERM EXIT
 	wait
 else
 	echo "$program_name process ID $background_pid started" >&2
-	echo "$program_name process ID $background_pid started" | logger -t$program_name
+	echo "$program_name process ID $background_pid started" | logger "-t$program_name"
 	disown %%
 fi
