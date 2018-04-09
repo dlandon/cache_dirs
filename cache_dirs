@@ -97,7 +97,7 @@
 #				- Show type of scanning being done - adaptive or fixed when cache_dirs is started.
 # dlandon
 #
-# Version 2.2.0g- When cache lost, don't wait for disks idle, instead decrease depth
+# Version 2.2.0h- When cache lost, don't wait for disks idle, instead decrease depth
 #               - Now scans each disks and cache in separate processes. Thus removed option -u for scan user
 #               - Fixed loss of adaptive after 1 week
 #               - Weekly rescan only when disks been idle long
@@ -106,7 +106,7 @@
 #               - Added file-count and depth adjustment by filecount
 # arberg
 ####################################################################################
-version=2.2.0g
+version=2.2.0h
 program_name=$(basename "$0")
 arg_count=$#
 
@@ -129,6 +129,7 @@ usage() {
 	echo " -d NN    =   max depth to allow when searching adaptively for appropriate depth level, used in \"find -maxdepth NN\" "
 	echo " -D NN    =   sets fixed depth level and disables adaptive depth level, uses \"find -maxdepth NN\" "
 	echo " -t NN    =   time in seconds between scheduled scan towards max depth, default weekly; this setting is only relevant with adaptive scan enabled (without -D setting)"
+	echo " -W NN    =   Disk Idle Timer - When the disks have been idle this long, cache_dirs adaptive scan starts working towards building the cache."
 	echo " -X NN    =   timeout in seconds for direcotry scan during disk-idle periods (and when fixed depth -D is set)"
 	echo " -Y NN    =   timeout in seconds for direcotry scan during initial scan and when cache has been lost"
 	echo " -Z NN    =   timeout in seconds for direcotry scan after all directories have been cached"
@@ -234,7 +235,7 @@ syslog() {
 	echo "$1" | logger "-t$program_name"
 }
 
-while getopts "p:m:M:c:d:D:e:i:l:FszBbwuvVahqSU:t:X:Y:Z:" opt; do
+while getopts "p:m:M:c:d:D:e:i:l:FszBbwuvVahqSU:t:W:X:Y:Z:" opt; do
 	case $opt in
 	m ) min_seconds=$OPTARG ;;
 	M ) max_seconds=$OPTARG ;;
@@ -287,6 +288,7 @@ while getopts "p:m:M:c:d:D:e:i:l:FszBbwuvVahqSU:t:X:Y:Z:" opt; do
 			;;
 		esac
 		;;
+	W) min_disk_idle_before_restarting_scan_sec="$OPTARG" ;;
 	X) scan_timeout_sec_idle="$OPTARG" ;;
 	Y) scan_timeout_sec_busy="$OPTARG" ;;
 	Z) scan_timeout_sec_stable="$OPTARG" ;;
@@ -673,6 +675,7 @@ else
 fi
 log "Setting Included dirs $(join , ${include_array[@]})"
 log "Setting Excluded dirs $(join , ${exclude_array[@]})"
+log "min_disk_idle_before_restarting_scan_sec=$min_disk_idle_before_restarting_scan_sec"
 log "scan_timeout_sec_idle=$scan_timeout_sec_idle"
 log "scan_timeout_sec_busy=$scan_timeout_sec_busy"
 log "can_timeout_sec_stable=$scan_timeout_sec_stable"
