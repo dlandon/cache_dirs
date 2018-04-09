@@ -1,3 +1,5 @@
+#!/usr/bin/env bash 
+
 # Thousand separator: http://unix.stackexchange.com/questions/113795/add-thousands-separator-in-a-number
 
 DEPTH=$1

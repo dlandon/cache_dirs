@@ -1,3 +1,5 @@
+#!/usr/bin/env bash 
+
 if [ "$USER" != "root" ]
 then
   echo "ERROR: Run as root"
