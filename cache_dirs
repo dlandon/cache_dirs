@@ -98,7 +98,7 @@
 #				- Show type of scanning being done - adaptive or fixed when cache_dirs is started.
 # dlandon
 #
-# Version 2.2.0j- When cache lost, don't wait for disks idle, instead decrease depth
+# Version 2.2.0 - When cache lost, don't wait for disks idle, instead decrease depth
 #               - Now scans each disks and cache in separate processes. Thus removed option -u for scan user
 #               - Fixed loss of adaptive after 1 week
 #               - Weekly rescan only when disks been idle long
@@ -107,7 +107,7 @@
 #               - Added file-count and depth adjustment by filecount
 # arberg
 ####################################################################################
-version=2.2.0j
+version=2.2.0
 program_name=$(basename "$0")
 arg_count=$#
 
@@ -165,7 +165,7 @@ commandargs=$*
 args="-noleaf"
 concise_log="no"
 # When min_disk_idle_before_restarting_scan_sec was 4 it restarting scanning too soon
-min_disk_idle_before_restarting_scan_sec=20
+min_disk_idle_before_restarting_scan_sec=60
 # scan_timeout_sec_stable used for busy rescan and stable scan, scan_timeout_sec_idle used for initial on disks idle scan
 scan_timeout_sec_busy=30
 scan_timeout_sec_idle=150
@@ -302,10 +302,10 @@ while getopts "p:m:M:c:d:D:e:i:l:FszBbwuvVahqSU:t:W:X:Y:Z:" opt; do
 	esac
 done
 
-if [ "$USER" != "root" ]
+if [ "$(whoami)" != "root" ]
 then
-  echo "ERROR: Run as root"
-  exit 1
+	echo "ERROR: Run as root"
+	exit 1
 fi
 
 # We need to use it with -KILL
@@ -956,8 +956,7 @@ do
 				if (( hasBeenIdleLong && appliedDepth < appliedMaxDepth )) ; then	
 					mode=$MODE_IDLE_RESCANNING
 				fi
-
-			elif (( (appliedDepth == appliedMaxDepthCurrent && mode = MODE_BUSY_RESCANNING) || appliedDepth == appliedMaxDepth )) ; then
+			elif (( (appliedDepth == appliedMaxDepthCurrent && mode == MODE_BUSY_RESCANNING) || appliedDepth == appliedMaxDepth )) ; then
 				mode=$MODE_STABLE
 			fi
 		elif (( (appliedDepth > 0 && depth_slow_scan_counter >= no_slow_scans_decrease_depth || is_last_depth_scan_timed_out) && depth_scan_counter >= min_no_scans_at_new_level )) ; then

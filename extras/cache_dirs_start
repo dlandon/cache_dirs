@@ -1,9 +1,0 @@
-#!/usr/bin/env bash 
-
-if [ "$USER" != "root" ]
-then
-  echo "ERROR: Run as root"
-  exit 1
-fi  
- 
- /usr/local/emhttp/plugins/dynamix.cache.dirs/scripts/rc.cachedirs start
