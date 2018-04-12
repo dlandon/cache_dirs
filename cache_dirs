@@ -765,8 +765,6 @@ prev_sleep_duration=0
 
 declare -A files_at_depth_map
 
-appliedMaxDepthCurrent=4
-
 while [ -f "$lockfile" ]
 do
 	if [ "$suspend_during_mover" = "yes" ] ; then
