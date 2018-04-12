@@ -123,7 +123,7 @@ usage() {
 	echo "       $program_name -l off  = turn off logging to $run_log and $lost_cache_log"
 	echo " -m NN    =   minimum seconds to wait between directory scans (default=1)"
 	echo " -M NN    =   maximum seconds to wait between directory scans (default=10)"
-	echo " -U NN    =   set ulimit to NN to limit memory used (default=50000), '-U 0' sets no ulimit at all)"
+	echo " -U NN    =   set ulimit to NN to limit memory used by script (default=50000), '-U 0' sets no ulimit at all)"
 	echo " -F       =   do NOT run in background, run in Foreground and print statistics as it loops and scans"
 	echo " -v       =   when used with -F, verbose statistics are printed as directories are scanned"
 	echo " -s       =   shorter-log - print count of directories scanned to syslog instead of their names"
@@ -139,7 +139,7 @@ usage() {
 	echo " -a args  =   append args to command"
 	echo " -e exclude_dir  (may be repeated as many times as desired)"
 	echo " -i include_dir  (may be repeated as many times as desired)"
-	echo " -p NN    =   set cache_pressure to NN (by default = 10)"
+	echo " -p NN    =   set cache_pressure to NN (by default = 10). 0 means never reclaim cache. See 'vfs_cache_pressure' in https://www.kernel.org/doc/Documentation/sysctl/vm.txt"
 	echo " -S       =   do not suspend scan during 'mover' process"
 	echo " -z       =   concise log (log run criteria on one line)"
 	echo " -q       =   terminate any background instance of cache_dirs"
@@ -185,6 +185,7 @@ no_busy_scans_increase_depth=50
 no_slow_scans_decrease_depth_idle=4
 no_slow_scans_decrease_depth_busy=4
 no_slow_scans_decrease_depth_stable=4
+min_no_scans_at_new_level=3
 
 ulimit_mem=50000
 
@@ -762,6 +763,7 @@ appliedMaxDepthCurrent=$appliedMaxDepth
 last_scan_towards_max_depth=$(date +%s)
 is_last_depth_scan_timed_out=0
 prev_sleep_duration=0
+next_sleep_duration=0
 
 declare -A files_at_depth_map
 
@@ -786,25 +788,28 @@ do
 	time_since_disk_access_before_scan_sec=$(fnc_time_since_last_disk_access)
 	if ((fixdepth == -1)) ; then
 		(( time_since_disk_access_before_scan_sec >= min_disk_idle_before_restarting_scan_sec )) && hasBeenIdleLong=1 || hasBeenIdleLong=0
-		if (( hasBeenIdleLong )) ; then
-			if (( mode == MODE_STABLE)) ; then
-				mode=$MODE_STABLE_IDLE
-			else
-				mode=$MODE_IDLE_RESCANNING
-			fi
-		elif (( time_since_disk_access_before_scan_sec == 0 )) ; then
-			if ((mode == MODE_IDLE_RESCANNING)) ; then
-				# We have slept a second, so if disks have not been idle for a second, it means they are busy again. It does not hurt if we move back and forth between the two modes
-				if (( appliedDepth <= 3 )) ; then
-					mode=$MODE_BUSY_RESCANNING
-				else
+		if (( depth_scan_counter >= min_no_scans_at_new_level )) ; then
+			# never change mode before having tried a few times to build cache pressure at level
+			if (( hasBeenIdleLong )) ; then
+				if (( mode == MODE_STABLE )) ; then
+					mode=$MODE_STABLE_IDLE
+				elif (( mode == MODE_BUSY_RESCANNING )) ; then
+					mode=$MODE_IDLE_RESCANNING
+				fi
+			elif (( time_since_disk_access_before_scan_sec == 0 )) ; then
+				if ((mode == MODE_IDLE_RESCANNING)) ; then
+					# We have slept a second, so if disks have not been idle for a second, it means they are busy again. It does not hurt if we move back and forth between the two modes
+					if (( appliedDepth <= 3 )) ; then
+						mode=$MODE_BUSY_RESCANNING
+					else
+						# It seems to work great to do all scanning work when we know system is idle, and stop immediately with the scanning of deeper levels when disks are not idle.
+						mode=$MODE_STABLE
+					fi
+				elif ((mode == MODE_STABLE_IDLE)) ; then
 					# It seems to work great to do all scanning work when we know system is idle, and stop immediately with the scanning of deeper levels when disks are not idle.
 					mode=$MODE_STABLE
-				fi
-			elif ((mode == MODE_STABLE_IDLE)) ; then
-				# It seems to work great to do all scanning work when we know system is idle, and stop immediately with the scanning of deeper levels when disks are not idle.
-				mode=$MODE_STABLE
-			fi 
+				fi 
+			fi
 		fi	
 	fi
 
@@ -921,14 +926,11 @@ do
 	CPU="$(format_two_digit $cpu_usage)"
 	# Note elapsed_secs is an integer, so we need to recompute it from elapsed_time in the awk command below
 	avg_text=$(awk "BEGIN{ printf \"%05.2fs, wavg=%05.2fs\n\", ($elapsed_time/$NANO_PR_SEC), ($avg_elapsed_time/$NANO_PR_SEC) ; }")
-	log "$start_time_txt Executed $command in (${elapsed_secs}s) $avg_text ${log_disk_access_msg} $scanned_depth_msg slept ${next_sleep_duration}s Disks idle before/after ${time_since_disk_access_before_scan_sec}s/${time_since_disk_access_after_scan_sec}s suc/fail cnt=${depth_success_idle_incr_counter}/${depth_slow_scan_counter} mode=$mode scan_tmo=${scan_timeout_sec}s maxCur=$appliedMaxDepthCurrent maxWeek=$appliedMaxDepth isMaxDepthComputed=$isPreviousMaxDepthComputed CPU=${CPU}%, filecount[$appliedDepth]=${files_at_depth_map[$appliedDepth]}"
+	log "$start_time_txt Executed $command in (${elapsed_secs}s) $avg_text ${log_disk_access_msg} $scanned_depth_msg slept ${next_sleep_duration}s Disks idle before/after ${time_since_disk_access_before_scan_sec}s/${time_since_disk_access_after_scan_sec}s suc/fail cnt=$depth_scan_counter/$depth_success_idle_incr_counter/$depth_slow_scan_counter mode=$mode scan_tmo=${scan_timeout_sec}s maxCur=$appliedMaxDepthCurrent maxWeek=$appliedMaxDepth isMaxDepthComputed=$isPreviousMaxDepthComputed CPU=${CPU}%, filecount[$appliedDepth]=${files_at_depth_map[$appliedDepth]}"
 
 	if ((fixdepth == -1)) ; then
 		time_since_last_disk_access_sec=$(fnc_time_since_last_disk_access)
 		(( time_since_last_disk_access_sec >= min_disk_idle_before_restarting_scan_sec )) && hasBeenIdleLong=1 || hasBeenIdleLong=0
-		if (( hasBeenIdleLong && mode == MODE_BUSY_RESCANNING)) ; then
-			mode=$MODE_IDLE_RESCANNING
-		fi
 		if (( mode == MODE_IDLE_RESCANNING)) ; then
 			no_slow_scans_decrease_depth=$no_slow_scans_decrease_depth_idle
 		elif (( mode == MODE_BUSY_RESCANNING)) ; then
@@ -944,7 +946,7 @@ do
 			if (( appliedDepth == maxDepth )) ; then
 				isPreviousMaxDepthComputed=1
 			fi
-			if (( appliedDepth < appliedMaxDepthCurrent || appliedDepth < appliedMaxDepth && hasBeenIdleLong)) ; then
+			if (( appliedDepth < appliedMaxDepthCurrent || appliedDepth < appliedMaxDepth && (mode == MODE_IDLE_RESCANNING || mode == MODE_STABLE_IDLE) )) ; then
 				# Increment depth and check depth_max_incremental_depth: skip straight to maxDepth if deep enough, so we can start sleeping
 				appliedDepth=$(depthPlusOne $appliedDepth)
 				depth_slow_scan_counter=0
@@ -954,14 +956,16 @@ do
 				if (( hasBeenIdleLong && appliedDepth < appliedMaxDepth )) ; then	
 					mode=$MODE_IDLE_RESCANNING
 				fi
+
 			elif (( (appliedDepth == appliedMaxDepthCurrent && mode = MODE_BUSY_RESCANNING) || appliedDepth == appliedMaxDepth )) ; then
 				mode=$MODE_STABLE
 			fi
-		elif (( appliedDepth > 0 && depth_slow_scan_counter >= no_slow_scans_decrease_depth || is_last_depth_scan_timed_out )) ; then
+		elif (( (appliedDepth > 0 && depth_slow_scan_counter >= no_slow_scans_decrease_depth || is_last_depth_scan_timed_out) && depth_scan_counter >= min_no_scans_at_new_level )) ; then
+			# Sometimes it takes a few scans to build cache pressure which is seen by first scan being very slow, second a bit slow third pretty fast. So never decrease before trying at least 3 scans at level
 			depth_slow_scan_counter=0
 			depth_success_idle_incr_counter=0
 			depth_success_busy_incr_counter=0
-			depth_scan_counter=0
+			#don't reset 'depth_scan_counter=0' because we are decreasing level
 			# Reduce max-depth
 			appliedMaxDepthCurrent=$(depthMinusOne "$appliedDepth")
 			is_depth_reduced=1
@@ -969,7 +973,7 @@ do
 				appliedDepth=$(depthMinus50Percent "$appliedDepth")
 			else 
 				appliedDepth=$(depthMinusOne "$appliedDepth")
-				if (( !isPreviousMaxDepthComputed && mode == MODE_IDLE_RESCANNING )) ; then
+				if (( !isPreviousMaxDepthComputed && (mode == MODE_IDLE_RESCANNING || mode == MODE_STABLE_IDLE) )) ; then
 					# We were doing a scan during a time when disks have been idle, so system low was probably low. We take this to indicate this is the best depth the system can handle.
 					# Set max depth ceiling, which will be rechecked weekly. Move to stable mode, at one level below current level.
 					appliedMaxDepth=$appliedMaxDepthCurrent
