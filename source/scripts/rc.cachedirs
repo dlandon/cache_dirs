@@ -1,0 +1,59 @@
+#!/bin/bash
+#
+plugin=dynamix.cache.dirs
+script=cache_dirs
+execute=/usr/local/emhttp/plugins/$plugin/scripts/$script
+options=/etc/$script.conf
+run=/tmp/$script.run
+
+start_cache_dirs() {
+	if [[ -z $(pgrep -f $execute) ]]; then
+		# Ensure folder names are properly quoted
+		echo "$execute $(cat $options) 2>/dev/null" > $run
+		source $run
+		rm -f $run
+		echo "$script started"
+		echo "cache_dirs service $(basename "$0"): Started: '$execute $(cat $options) 2>/dev/null'" | logger "-tcache_dirs"
+	else
+		echo "$script already running!"
+	fi
+}
+
+stop_cache_dirs() {
+	if [[ -n $(pgrep -f $execute) ]]; then
+		$execute -q &>/dev/null
+		timer=5
+		until [[ -z $(pgrep -f $execute) || $timer -eq 0 ]]; do
+			timer=$((timer-1))
+			sleep 1
+		done
+		if [[ -z $(pgrep -f $execute) ]]; then
+			echo "cache_dirs service $(basename "$0"): Stopped" | logger "-tcache_dirs"
+		else
+			echo "$script process still running" | logger "-tcache_dirs"
+		fi
+	else
+		# Always execute because cache_dirs uses subprocesses and lock-file, and it may need to clean up
+		$execute -q &>/dev/null
+		echo "$script not running!"
+	fi
+}
+
+restart_cache_dirs() {
+	stop_cache_dirs
+	sleep 1
+	start_cache_dirs
+}
+
+case "$1" in
+	'start')
+		start_cache_dirs ;;
+
+	'stop')
+		stop_cache_dirs ;;
+
+	'restart')
+		restart_cache_dirs ;;
+*)
+	echo "Usage: $(basename "$0") start|stop|restart"
+esac
