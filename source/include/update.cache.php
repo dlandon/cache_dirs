@@ -72,7 +72,9 @@ if (isset($adaptive) && $adaptive == 1) {
 $options = trim($options);
 $keys['options'] = $options;
 file_put_contents($config, $options);
-if ($enable) {
+
+/* Start cache_dirs if enabled and included files are selected. */
+if (($enable) && ($new['include'])) {
 	exec("$cachedirs start >/dev/null");
 }
 ?>
