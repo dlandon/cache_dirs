@@ -5,7 +5,7 @@
 <!ENTITY version	"2024.04.25">
 <!ENTITY launch		"Settings/FolderCachingSettings">
 <!ENTITY gitURL		"https://raw.githubusercontent.com/&author;/cache_dirs/master">
-<!ENTITY pluginURL	"&gitURL;/&name;.plg">
+<!ENTITY pluginURL	"&gitURL;/dlandon.cache.dirs.plg">
 <!ENTITY source		"/boot/config/plugins/&name;/&name;">
 <!ENTITY MD5		"e7c1ac0f1ff891972a8eeab814d811ed">
 ]>
