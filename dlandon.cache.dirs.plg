@@ -251,6 +251,12 @@ if [[ $enable -eq 1 ]]; then
 fi
 rm -f /tmp/start_service
 
+# Move the old dynamix.cache.dirs.plg to plugin errors so it doesn't get installed again
+old_plugin="/boot/config/plugins/dynamix.cache.dirs.plg"
+if [[ -e $old_plugin ]]; then
+	mv $old_plugin /boot/config/plugins-error/dynamix.cache.dirs.plg
+fi
+
 echo ""
 echo "-----------------------------------------------------------"
 echo " Plugin &name; is installed."
