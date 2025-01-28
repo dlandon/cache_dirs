@@ -118,9 +118,12 @@
 #
 # Version 2.2.8  Added multi-cache pool support
 #                change disk* to disk[0-9]* to avoid issues with the UD plugin
+#
+# Version 2.2.9  Fix included and excluded logging to handle shares with spaces
+#
 # bergware
 ####################################################################################
-version=2.2.8
+version=2.2.9
 program_name=$(basename "$0")
 arg_count=$#
 
@@ -844,8 +847,10 @@ if [ "$concise_log" = "no" ] ; then
   # syslog "$(join , ${dir_list[@]})"
   syslog "$log_list"
   syslog "----------------------------------------------"
-  syslog "Setting Included dirs: $(join , ${include_array[@]})"
-  syslog "Setting Excluded dirs: $(join , ${exclude_array[@]})"
+  log_safe_string=$(IFS=,; echo "${include_array[*]}" | sed 's/\\ / /g')
+  syslog "Setting Included dirs: $log_safe_string"
+  log_safe_string=$(IFS=,; echo "${exclude_array[*]}" | sed 's/\\ / /g')
+  syslog "Setting Excluded dirs: $log_safe_string"
   syslog "min_disk_idle_before_restarting_scan_sec=$min_disk_idle_before_restarting_scan_sec"
   syslog "scan_timeout_sec_idle=$scan_timeout_sec_idle"
   syslog "scan_timeout_sec_busy=$scan_timeout_sec_busy"
