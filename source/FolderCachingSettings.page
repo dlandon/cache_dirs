@@ -4,7 +4,7 @@ Icon="dynamix.cache.dirs.png"
 ---
 <?PHP
 /* Copyright 2012-2023, Bergware International.
- * Copyright 2024 Dan Landon.
+ * Copyright 2024-2025 Dan Landon.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License version 2,
@@ -15,10 +15,20 @@ Icon="dynamix.cache.dirs.png"
  */
 ?>
 <?
-$plugin = 'dynamix.cache.dirs';
-$cfg    = parse_plugin_cfg($plugin,false, INI_SCANNER_RAW);
-$fName  = "$docroot/plugins/$plugin/scripts/cache_dirs";
-$config = "/etc/cache_dirs.conf";
+/* Define our plugin name. */
+define('CACHE_DIRS_PLUGIN', 'dynamix.cache.dirs');
+
+/* Define the docroot path. */
+if (!defined('DOCROOT')) {
+	define('DOCROOT', $_SERVER['DOCUMENT_ROOT'] ?: '/usr/local/emhttp');
+}
+
+define('CACHE_DIRS_CFG_FILE', CACHE_DIRS_PLUGIN."/".CACHE_DIRS_PLUGIN.".cfg");
+define('CACHE_DIRS_PHP_FILE', "plugins/".CACHE_DIRS_PLUGIN."/include/update.cache.php");
+define('CACHE_DIRS_CONFIG_FILE', "/etc/cache_dirs.conf");
+define('CACHE_DIRS_SCRIPT', DOCROOT."/plugins/".CACHE_DIRS_PLUGIN."/scripts/cache_dirs");
+
+$cfg    = parse_plugin_cfg(CACHE_DIRS_PLUGIN, false, INI_SCANNER_RAW);
 $pools  = $pools ?? ['cache'];
 $search = ['/mnt/disk[0-9]*'];
 
@@ -50,8 +60,8 @@ $cfg['exclude'] = "";
 <script>
 function prepareCache(form) {
 /* Simulate a single input field. */
-	var include = [];
-	for (var i=0,item; item=form.include.options[i]; i++) {
+	let include = [];
+	for (let i=0,item; item=form.include.options[i]; i++) {
 		if (item.selected) {
 			include.push(item.value);
 			item.selected = false;
@@ -62,18 +72,18 @@ function prepareCache(form) {
 	item.selected = true;
 }
 $(function() {
-	var size = Math.max(window.innerHeight-$('#pin').offset().top-150,150);
+	let size = Math.max(window.innerHeight-$('#pin').offset().top-150,150);
 	$('#s1').dropdownchecklist({maxDropHeight:size, width:166, explicitClose:'..._(close)_'});
 	showStatus('cache_dirs');
 });
 </script>
 
 <form markdown="1" name="cache_settings" method="POST" action="/update.php" target="progressFrame" onsubmit="prepareCache(this)">
-<input type="hidden" name="#file" value="<?=$plugin?>/<?=$plugin?>.cfg">
-<input type="hidden" name="#include" value="plugins/<?=$plugin?>/include/update.cache.php">
-<input type="hidden" name="#config" value="<?=$config?>">
+<input type="hidden" name="#file" value="<?=CACHE_DIRS_CFG_FILE;?>">
+<input type="hidden" name="#include" value="<?=CACHE_DIRS_PHP_FILE;?>">
+<input type="hidden" name="#config" value="<?=CACHE_DIRS_CONFIG_FILE;?>">
 <input type="hidden" name="#prefix" value="minimum=m&maximum=M&exclude=e&include=i&log=l&diskIdleTimer=W&scanTimeoutIdle=X&scanTimeoutBusy=Y&scanTimeoutStable=Z&ulimit=U&cachePressure=p&minDepth=c">
-<span class="bitstream" style="float:right;"><?=trim(exec("$fName -V"))?></span>
+<span class="bitstream" style="float:right;"><?=trim(exec(CACHE_DIRS_SCRIPT." -V"))?></span>
 
 :cachedirs_info_plug:
 > Folder Caching Info
@@ -101,7 +111,7 @@ _(Folder caching function)_:
 :end
 
 _(Cache pressure of directories on system)_:
-: <input type="text" name="cachePressure" class="narrow" maxlength="4" value="<?=$cfg['cachePressure']?>" placeholder="10"><span class="orange-text">_(Important - check HELP if disks spin up)_</span>
+: <input type="text" name="cachePressure" class="narrow" maxlength="4" value="<?=htmlspecialchars($cfg['cachePressure'])?>" placeholder="10"><span class="orange-text">_(Important - check HELP if disks spin up)_</span>
 
 :cachedirs_pressure_plug:
 > Set cache_pressure to NN (default = 10). A value of 0 means never reclaim cache.
@@ -141,7 +151,7 @@ _(Scan user shares (/mnt/user))_:
 _(Included folders)_:
 : <select id="s1" name="include" style="display:none" multiple>
   <?foreach ($folders as $folder):?>
-    <?=mk_option_check($cfg['include'], $folder, $folder)?>
+    <?=mk_option_check($cfg['include'], htmlspecialchars($folder), htmlspecialchars($folder))?>
   <?endforeach;?>
   </select>
 
@@ -162,28 +172,28 @@ _(Use Adaptive depth)_:
 :end
 
 _(Minimum level depth)_ (_(for adaptive depth)_):
-: <input type="text" name="minDepth" class="narrow" maxlength="3" value="<?=$cfg['minDepth']?>" placeholder="4">
+: <input type="text" name="minDepth" class="narrow" maxlength="3" value="<?=htmlspecialchars($cfg['minDepth'])?>" placeholder="4">
 
 :cachedirs_min_level_plug:
 > Sets the minimum folder level for the adaptive scan (user-share > child folder > grand child is two levels). Default is 4.
 :end
 
 _(Maximum level depth)_:
-: <input type="text" name="depth" class="narrow" maxlength="3" value="<?=$cfg['depth']?>" placeholder="_(unlimited)_">
+: <input type="text" name="depth" class="narrow" maxlength="3" value="<?=htmlspecialchars($cfg['depth'])?>" placeholder="_(unlimited)_">
 
 :cachedirs_max_level_plug:
 > Sets the maximum folder levels for the scan (parent > child folder > grand child). Set to 'unlimited' (or 0) to remove maximum
 :end
 
 _(Disk Idle Timer)_ (_(sec)_):
-: <input type="text" name="diskIdleTimer" class="narrow" maxlength="4" value="<?=$cfg['diskIdleTimer']?>" placeholder="60">
+: <input type="text" name="diskIdleTimer" class="narrow" maxlength="4" value="<?=htmlspecialchars($cfg['diskIdleTimer'])?>" placeholder="60">
 
 :cachedirs_idle_timer_plug:
 > When the disks have been idle this long, cache_dirs adaptive scan starts working towards building the cache.
 :end
 
 _(Timeout during disk-idle period)_ (_(sec)_):
-: <input type="text" name="scanTimeoutIdle" class="narrow" maxlength="4" value="<?=$cfg['scanTimeoutIdle']?>" placeholder="150">
+: <input type="text" name="scanTimeoutIdle" class="narrow" maxlength="4" value="<?=htmlspecialchars($cfg['scanTimeoutIdle'])?>" placeholder="150">
 
 :cachedirs_timeout_scan_plug:
 > Scan timeout is the maximum duration that a single scan through all directories at the current level af depth (which may change adaptively).
@@ -191,14 +201,14 @@ _(Timeout during disk-idle period)_ (_(sec)_):
 :end
 
 _(Timeout during initial startup or less-idle period)_ (_(sec)_):
-: <input type="text" name="scanTimeoutBusy" class="narrow" maxlength="4" value="<?=$cfg['scanTimeoutBusy']?>" placeholder="30">
+: <input type="text" name="scanTimeoutBusy" class="narrow" maxlength="4" value="<?=htmlspecialchars($cfg['scanTimeoutBusy'])?>" placeholder="30">
 
 :cachedirs_timeout_initial_plug:
 > Increase it if you want cache_dirs to give more time in initial scan, and when filesystem may be busy.
 :end
 
 _(Timeout when all directories have been cached)_ (_(sec)_):
-: <input type="text" name="scanTimeoutStable" class="narrow" maxlength="4" value="<?=$cfg['scanTimeoutStable']?>" placeholder="20">
+: <input type="text" name="scanTimeoutStable" class="narrow" maxlength="4" value="<?=htmlspecialchars($cfg['scanTimeoutStable'])?>" placeholder="20">
 
 :cachedirs_timeout_cached_plug:
 > Decrease it if you want cache_dirs to put less load on system when cache is evicted from memory, and disks are not idle.
@@ -206,14 +216,14 @@ _(Timeout when all directories have been cached)_ (_(sec)_):
 :end
 
 _(Minimum interval between folder scans)_ (_(sec)_):
-: <input type="text" name="minimum" class="narrow" maxlength="3" value="<?=$cfg['minimum']?>" placeholder="1">
+: <input type="text" name="minimum" class="narrow" maxlength="3" value="<?=htmlspecialchars($cfg['minimum'])?>" placeholder="1">
 
 :cachedirs_min_interval_plug:
 > Tweaking of the caching interval can be done for slower systems. Default value is 1 second, should be alright for most systems.
 :end
 
 _(Maximum interval between folder scans)_ (_(sec)_):
-: <input type="text" name="maximum" class="narrow" maxlength="3" value="<?=$cfg['maximum']?>" placeholder="10">
+: <input type="text" name="maximum" class="narrow" maxlength="3" value="<?=htmlspecialchars($cfg['maximum'])?>" placeholder="10">
 
 :cachedirs_max_interval_plug:
 > Tweaking of the caching interval can be done for slower systems. Default value is 10 seconds, should be alright for most systems.
@@ -231,7 +241,7 @@ _(Run scan of each disk in a separate thread)_:
 :end
 
 _(Memory available to the cache_dirs script (increase if it dies))_:
-: <input type="text" name="ulimit" class="narrow" maxlength="6" value="<?=$cfg['ulimit']?>" placeholder="50000">
+: <input type="text" name="ulimit" class="narrow" maxlength="6" value="<?=htmlspecialchars($cfg['ulimit'])?>" placeholder="50000">
 
 :cachedirs_limit_memory_plug:
 > Set ulimit to NN to limit memory used by script (default=50000), '-U 0' sets no ulimit at all and inherits the shells default).
@@ -249,7 +259,7 @@ _(Logging)_:
 :end
 
 _(User defined options)_:
-: <input id="pin" type="text" name="other" class="narrow" maxlength="200" value="<?=$cfg['other']?>" placeholder="_(User defined options)_"><span class="orange-text">_(Check HELP for filter example)_</span>
+: <input id="pin" type="text" name="other" class="narrow" maxlength="200" value="<?=htmlspecialchars($cfg['other'])?>" placeholder="_(User defined options)_"><span class="orange-text">_(Check HELP for filter example)_</span>
 _(or see)_ <u><a href="http://lime-technology.com/forum/index.php?topic=4500.0" target="_blank">_(Unraid forum)_</a></u>
 
 :cachedirs_user_defined_plug:

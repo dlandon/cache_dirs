@@ -1,6 +1,6 @@
 <?PHP
 /* Copyright 2012-2023, Bergware International.
- * Copyright 2024 Dan Landon.
+ * Copyright 2024-2025 Dan Landon.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License version 2,
@@ -11,8 +11,13 @@
  */
 ?>
 <?
-$docroot	= $docroot ?? $_SERVER['DOCUMENT_ROOT'] ?: '/usr/local/emhttp';
-$cachedirs	= "$docroot/plugins/dynamix.cache.dirs/scripts/rc.cachedirs";
+/* Define the docroot path. */
+if (!defined('DOCROOT')) {
+	define('DOCROOT', $_SERVER['DOCUMENT_ROOT'] ?: '/usr/local/emhttp');
+}
+
+define('CACHE_DIRS', DOCROOT."/plugins/dynamix.cache.dirs/scripts/rc.cachedirs");
+
 $new		= isset($default) ? array_replace_recursive($_POST, $default) : $_POST;
 
 $config		= '';
@@ -61,7 +66,7 @@ foreach ($new as $key => $value) {
 	}
 }
 
-exec("$cachedirs stop >/dev/null");
+exec(CACHE_DIRS." stop >/dev/null");
 if (isset($adaptive) && $adaptive == 1) {
 	if (isset($depth) && $depth > 0) {
 		$options .= "-d " . $depth;
@@ -75,6 +80,6 @@ file_put_contents($config, $options);
 
 /* Start cache_dirs if enabled and included files are selected. */
 if (($enable) && ($new['include'])) {
-	exec("$cachedirs start >/dev/null");
+	exec(CACHE_DIRS." start >/dev/null");
 }
 ?>
