@@ -2,12 +2,12 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name		"dynamix.cache.dirs">
 <!ENTITY author		"dlandon">
-<!ENTITY version	"2025.01.28">
+<!ENTITY version	"2025.03.06">
 <!ENTITY launch		"Settings/FolderCachingSettings">
-<!ENTITY gitURL		"https://raw.githubusercontent.com/&author;/cache_dirs/master">
+<!ENTITY gitURL		"https://raw.githubusercontent.com/unraid/cache_dirs/master">
 <!ENTITY pluginURL	"&gitURL;/&author;.cache.dirs.plg">
 <!ENTITY source		"/boot/config/plugins/&name;/&name;">
-<!ENTITY MD5		"e2151595b333aae308c1c9f9dd5af48e">
+<!ENTITY MD5		"7f94a6577309b3010bae3ba6cf65a409">
 ]>
 <PLUGIN	name="&name;"
 		author="&author;"
@@ -20,6 +20,9 @@
 <CHANGES>
 ##&name;
 ###&version;
+- Add: Change to Unraid repository.
+
+###2025.01.28
 - Fix: Change some variables to constants that shouldn't be variables.
 - Fix: Code changes for reliability and robustness.
 - Fix: Logging issue in the cache_dirs script that deliniated a share name with spaces incorrectly.
