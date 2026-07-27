@@ -14,6 +14,7 @@ Icon="dynamix.cache.dirs.png"
  * all copies or substantial portions of the Software.
  */
 ?>
+
 <?
 /* Define our plugin name. */
 define('CACHE_DIRS_PLUGIN', 'dynamix.cache.dirs');
