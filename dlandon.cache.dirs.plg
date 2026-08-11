@@ -177,7 +177,7 @@ Dynamix Folder Caching - Store directory names in memory to avoid disk spin-ups.
 Get the plugin bundle.
 -->
 <FILE Name="/boot/config/plugins/&name;/&name;-&version;.tgz">
-<URL>"tgzURL;/&name;-&version;.tgz"</URL>
+<URL>"&gitURL;/&name;-&version;.tgz"</URL>
 <MD5>&MD5;</MD5>
 </FILE>
 exit
