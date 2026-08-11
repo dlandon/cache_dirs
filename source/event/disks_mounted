@@ -1,14 +1,25 @@
 #!/bin/bash
-plugin=dynamix.cache.dirs
-conf=/etc/cache_dirs.conf
-cfg=/boot/config/plugins/$plugin/$plugin.cfg
-[[ ! -e $cfg ]] && cfg=/usr/local/emhttp/plugins/$plugin/default.cfg
+#
+# Start cache_dirs when the array disks are mounted.
+#
 
-enable=$(grep "^service=" $cfg|cut -d'"' -f2)
-if [[ $enable == 1 ]]; then
-  if [[ ! -f $conf ]]; then
-    grep '^options=' $cfg|cut -d'"' -f2-|sed 's:"$::'|tr -d "\n" > $conf
-    echo "cache_dirs event $(basename "$0"): no $conf, generated new" | logger "-tcache_dirs"
-  fi
-  /usr/local/emhttp/plugins/$plugin/scripts/rc.cachedirs start >/dev/null
+plugin="dynamix.cache.dirs"
+script="cache_dirs"
+execute="/usr/local/emhttp/plugins/$plugin/scripts/$script"
+conf="/etc/cache_dirs.conf"
+cfg_flash="/boot/config/plugins/$plugin/$plugin.cfg"
+cfg_default="/usr/local/emhttp/plugins/$plugin/default.cfg"
+rc_script="/usr/local/emhttp/plugins/$plugin/scripts/rc.cachedirs"
+
+cfg="$cfg_flash"
+[[ -f "$cfg" ]] || cfg="$cfg_default"
+
+enable=$(grep -Po '^service="\K[^"]+' "$cfg")
+
+if [[ "$enable" == "1" ]]; then
+	if [[ -z $(pgrep -f "$execute") ]]; then
+		grep '^options=' $cfg|cut -d'"' -f2- | sed 's:"$::' | tr -d "\n" > $conf
+
+		"$rc_script" start >/dev/null &
+	fi
 fi

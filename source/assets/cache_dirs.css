@@ -1,0 +1,63 @@
+/*
+ * Responsive UI adjustments.
+ */
+
+/* Width of the included folders multi-select control. */
+.cache-dirs-include {
+	width: min(700px, calc(100vw - 250px));
+}
+
+/* Standard width for numeric input fields. */
+.cache-dirs-input {
+	width: 160px !important;
+}
+
+/* Visually indicate when Minimum Depth is disabled. */
+#minDepth:disabled {
+	opacity: 0.6;
+}
+
+/* Right-align the version information in the page header. */
+.cache-header {
+	display: flex;
+	justify-content: flex-end;
+	margin-bottom: 1rem;
+}
+
+/* Monospaced version text for readability. */
+.cache-version {
+	font-family: monospace;
+}
+
+/* Two-column layout for settings and status summary. */
+.cache-content {
+	display: flex;
+	align-items: flex-start;
+	gap: 32px;
+}
+
+/* Main configuration panel. */
+.cache-settings {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+/* Right-side summary panel. */
+.cache-summary {
+	flex: 0 0 320px;
+}
+
+/* Summary panel title. */
+.cache-summary-title {
+	font-weight: bold;
+	font-size: 1.15em;
+	margin-bottom: 12px;
+}
+
+/* Section headings within the summary panel. */
+.cache-summary-heading {
+	font-weight: bold;
+	text-decoration: underline;
+	margin-top: 16px;
+	margin-bottom: 6px;
+}

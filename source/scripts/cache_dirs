@@ -121,9 +121,12 @@
 #
 # Version 2.2.9  Fix included and excluded logging to handle shares with spaces
 #
-# bergware
+# Version 2.3.0  Redo startup logging - verbose and concise logging.
+#                Change duplicate '-c' command (minDepth and command) and change minDepth command to '-C'.
+# dlandon
 ####################################################################################
-version=2.2.9
+version=2.3.0
+
 program_name=$(basename "$0")
 arg_count=$#
 
@@ -153,6 +156,7 @@ usage() {
   echo " -Z NN    =   timeout in seconds for direcotry scan after all directories have been cached"
   echo " -c command = use command instead of \"find\" "
   echo "              (\"command\" should be quoted if it has embedded spaces)"
+  echo " -C       =   set minDepth for adaptive scan"
   echo " -a args  =   append args to command"
   echo " -u       =   also scan /mnt/user (scan user shares) - may considerably increase cpu time, and should not be necessary but seem to be for some"
   echo " -e exclude_dir  (may be repeated as many times as desired)"
@@ -181,8 +185,8 @@ fixdepth=-1
 command="find"
 window_array_length=20
 avg_elapsed_time=0
-exclude_array_count=0
 include_array_count=0
+exclude_array_count=0
 quit_flag="no"
 suspend_during_mover="yes"
 commandargs=$*
@@ -317,11 +321,8 @@ run_diagnostics() {
   head -1 /boot/changes.txt
 }
 
-while getopts "a:p:m:M:c:d:D:e:i:l:FszBbwuvVhqSc:U:t:W:X:Y:Z:LTP" opt; do
+while getopts "a:p:m:M:c:C:d:D:i:e:h:l:FszBbwuvVhqSc:U:t:W:X:Y:Z:LTP" opt; do
   case $opt in
-  c ) minDepth="$OPTARG"
-    ((minDepth < 1)) && minDepth=1
-    ;;
   m ) min_seconds=$OPTARG ;;
   M ) max_seconds=$OPTARG ;;
   F ) background=no ;;
@@ -329,6 +330,9 @@ while getopts "a:p:m:M:c:d:D:e:i:l:FszBbwuvVhqSc:U:t:W:X:Y:Z:LTP" opt; do
   V ) echo "$program_name version: $version"; exit 0 ;;
   u ) include_scan_of_user_share=1 ;;
   c ) command="$OPTARG" ;;
+  C ) minDepth="$OPTARG"
+    ((minDepth < 1)) && minDepth=1
+    ;;
   a ) args="$OPTARG" ;;
   d ) maxDepth=$OPTARG
     (( maxDepth <= depth_max_incremental_depth )) && depth_max_incremental_depth=$((maxDepth - 1))
@@ -363,7 +367,7 @@ while getopts "a:p:m:M:c:d:D:e:i:l:FszBbwuvVhqSc:U:t:W:X:Y:Z:LTP" opt; do
       rm "$run_log"
       rm "$lost_cache_log"
       rm "$csv_log"
-      echo "Logging to $run_log stopped"
+      syslog "Logging to $run_log stopped"
       ;;
     *)
       echo "Invalid argument to -l option"
@@ -483,13 +487,14 @@ if [ -f "${lockfile}" ] ; then
     fi
   else
     if [ "$quit_flag" = "yes" ] ; then
-      echo "Stopping $program_name process $lock_pid"
-      syslog "Stopping $program_name process $lock_pid"
+      echo "Stopping $program_name process $lock_pid..."
+      syslog "Stopping $program_name process $lock_pid..."
       # 1. Remove lock-file so we don't spawn new find-processes
       rm "${lockfile}"
       # Sleep 1 because it means we will get log info if slow find processes isn't running
       sleep 1;
       killtree "$lock_pid" -KILL
+      echo "Stopped"
       exit 0
     else
       echo "$program_name is already running [${lock_pid}]"
@@ -506,6 +511,7 @@ else
 fi
 
 log "$program_name version $version"
+
 #Try to play nice
 if [ "$ulimit_mem" -gt 0 ] ; then
   log "Setting Memory ulimit to $ulimit_mem"
@@ -834,34 +840,54 @@ if (( scan_depth == 9999 )) ; then
   scan_depth="none"
 fi
 
+syslog "Starting cache_dirs..."
 if [ "$concise_log" = "no" ] ; then
-  syslog "Arguments=$commandargs"
-  syslog "Max Scan Secs=$max_seconds, Min Scan Secs=$min_seconds"
-  syslog "Scan Type=$scan_type"
-  if ((fixdepth == -1)) ; then
-    syslog "Min Scan Depth=$minDepth"
-  fi
-  syslog "Max Scan Depth=$scan_depth"
-  syslog "Use Command='$command $args'"
-  syslog "---------- Caching Directories ---------------"
-  # syslog "$(join , ${dir_list[@]})"
-  syslog "$log_list"
-  syslog "----------------------------------------------"
-  log_safe_string=$(IFS=,; echo "${include_array[*]}" | sed 's/\\ / /g')
-  syslog "Setting Included dirs: $log_safe_string"
-  log_safe_string=$(IFS=,; echo "${exclude_array[*]}" | sed 's/\\ / /g')
-  syslog "Setting Excluded dirs: $log_safe_string"
-  syslog "min_disk_idle_before_restarting_scan_sec=$min_disk_idle_before_restarting_scan_sec"
-  syslog "scan_timeout_sec_idle=$scan_timeout_sec_idle"
-  syslog "scan_timeout_sec_busy=$scan_timeout_sec_busy"
-  syslog "scan_timeout_sec_stable=$scan_timeout_sec_stable"
-  syslog "frequency_of_full_depth_scan_sec=$frequency_of_full_depth_scan_sec"
-  if (( include_scan_of_user_share == 1 )) ; then
-    syslog "Including /mnt/user in scan"
-  fi
+	dir_list=$(printf '%s\n' "${include_array[@]}")
+	dir_list=${dir_list//\\ / }
+
+	log_safe_string=$(printf '%s, ' "${include_array[@]}")
+	log_safe_string=${log_safe_string//\\ / }
+	log_safe_string=${log_safe_string%, }
+
+	log_safe_exclude=$(printf '%s, ' "${exclude_array[@]}")
+	log_safe_exclude=${log_safe_exclude//\\ / }
+	log_safe_exclude=${log_safe_exclude%, }
+	log_safe_exclude=${log_safe_exclude//\"/}
+
+	syslog "Arguments=$commandargs"
+	syslog "Max Scan Secs=$max_seconds, Min Scan Secs=$min_seconds"
+	syslog "Scan Type=$scan_type"
+	if ((fixdepth == -1)) ; then
+		syslog "Min Scan Depth=$minDepth"
+	fi
+	syslog "Max Scan Depth=$scan_depth"
+	syslog "---------- Caching Directories ---------------"
+	syslog "$dir_list"
+	syslog "----------------------------------------------"
+	syslog "Setting Included dirs: $log_safe_string"
+	if (( exclude_array_count > 0 )) ; then
+		syslog "Setting Excluded dirs: $log_safe_exclude"
+	fi
+	syslog "min_disk_idle_before_restarting_scan_sec=$min_disk_idle_before_restarting_scan_sec"
+	syslog "scan_timeout_sec_idle=$scan_timeout_sec_idle"
+	syslog "scan_timeout_sec_busy=$scan_timeout_sec_busy"
+	syslog "scan_timeout_sec_stable=$scan_timeout_sec_stable"
+	syslog "frequency_of_full_depth_scan_sec=$frequency_of_full_depth_scan_sec"
+	if (( include_scan_of_user_share == 1 )) ; then
+		syslog "Including /mnt/user in scan"
+	fi
 else
-  echo "Arguments=$commandargs, Version=$version, Cache Pressure=$cache_pressure, Max Scan Secs=$max_seconds, Min Scan Secs=$min_seconds, Scan Type=$scan_type, Max Depth=$scan_depth, Use Command='$command $args'" | paste -s -d "," - | logger "-t$program_name"
-  echo "$log_list" | paste -s -d "," - | logger "-t$program_name"
+	dir_list=$(printf '%s, ' "${include_array[@]}")
+	dir_list=${dir_list//\\ / }
+	dir_list=${dir_list%, }
+
+	syslog "Caching directories: $dir_list"
+
+	if [[ "$scan_type" == "adaptive" ]]; then
+		syslog "Adaptive scan enabled"
+	else
+		syslog "Fixed-depth scan enabled depth ($scan_depth)"
+	fi
 fi
 
 logLostCacheHeader
@@ -934,7 +960,6 @@ next_sleep_duration=0
 declare -A files_at_depth_map
 
 {
-  log "cache_dirs started"
   while [ -f "$lockfile" ]
   do
     if [ "$suspend_during_mover" = "yes" ] ; then
@@ -1215,8 +1240,8 @@ if [ $background = "no" ] ; then
   # only way to get here is to remove the lock file or kill the background process shell with the while loop
   trap "syslog '$program_name process $background_pid was terminated via trap'; rm -f $lockfile; killtree $background_pid -KILL 2>/dev/null; exit" INT TERM EXIT
   wait
-  echo "Stopped"
+  syslog "Stopped"
 else
-  syslogerror"$program_name process ID $background_pid started"
+  syslogerror "$program_name process ID $background_pid started"
   disown %%
 fi

@@ -1,4 +1,9 @@
 #!/bin/bash
 #
-plugin=dynamix.cache.dirs
-/usr/local/emhttp/plugins/$plugin/scripts/rc.cachedirs stop >/dev/null
+# Stop cache_dirs when services are stopping.
+#
+
+plugin="dynamix.cache.dirs"
+rc_script="/usr/local/emhttp/plugins/$plugin/scripts/rc.cachedirs"
+
+"$rc_script" stop >/dev/null &
