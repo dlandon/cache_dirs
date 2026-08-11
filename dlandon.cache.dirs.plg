@@ -2,33 +2,45 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name		"dynamix.cache.dirs">
 <!ENTITY author		"dlandon">
-<!ENTITY version	"2025.03.06">
+<!ENTITY version	"2026.08.11">
 <!ENTITY launch		"Settings/FolderCachingSettings">
-<!ENTITY gitURL		"https://raw.githubusercontent.com/unraid/cache_dirs/master">
+<!ENTITY gitURL		"https://raw.githubusercontent.com/&author;/cache_dirs/master">
 <!ENTITY pluginURL	"&gitURL;/&author;.cache.dirs.plg">
 <!ENTITY source		"/boot/config/plugins/&name;/&name;">
-<!ENTITY MD5		"7f94a6577309b3010bae3ba6cf65a409">
+<!ENTITY supportURL	"http://forums.unraid.net/index.php?topic=36543.0">
+<!ENTITY MD5		"f4e7dacb9642da48ca1c9e35cb396939">
 ]>
+
 <PLUGIN	name="&name;"
 		author="&author;"
 		version="&version;"
 		launch="&launch;"
 		pluginURL="&pluginURL;"
-		min="6.12.0"
-		support="http://forums.unraid.net/index.php?topic=36543.0">
+		support="&supportURL;"
+		min="6.12.0">
 
 <CHANGES>
 ##&name;
 ###&version;
+- Fix: Refactor UI to simplify the settings and update all Help.
+- Fix: Cut down on excessive cache_dirs script logging. 
+- Fix: Fixed depth causes the cache_dirs script to fail to start. 
+- Fix: Folders to cache setting did not show more that a few of the selected shares.
+- Fix: Minimum scan depth UI option not being applied.
+- Add: Status of cache_dirs and list of cached folders displayed on the right of the UI.
+- Add: Styles for a responsve design.
+- Add: Modernize code.
+
+###2025.03.06
 - Add: Change to Unraid repository.
 
 ###2025.01.28
 - Fix: Change some variables to constants that shouldn't be variables.
 - Fix: Code changes for reliability and robustness.
-- Fix: Logging issue in the cache_dirs script that deliniated a share name with spaces incorrectly.
+- Fix: Logging issue in the cache_dirs script that delininated a share name with spaces incorrectly.
 
 ###2024.04.26
-- Rem: Remove exclude shares option
+- Rem: Remove exclude shares option from the UI.  It is still implemented in the cache_dirs script.
 
 ###2023.02.19
 - PHP 8.2 corrections
@@ -97,7 +109,7 @@
 
 ###2015.12.13
 - changed .txz file naming to support consistent package upgrading
-- updated rc.cache_dirs script (start | stop | restart)
+- updated rc.cachedirs script (start | stop | restart)
 - moved to cache_dirs script maintained by Alex R. Berg
 
 ###2015.12.11
@@ -154,29 +166,41 @@
 ###2014.11.28
 - initial release for unRAID v6
 </CHANGES>
-  <!--
+
+<!--
 Copyright 2023, Bergware International
-Copyright 2024-2025, Dan Landon
-Dynamix Folder Caching - Store names in memory to avoid disk spin-ups. Makes use of cache_dirs script written by Joe L. and updated by Alex R. Berg
+Copyright 2024-2026, Dan Landon
+Dynamix Folder Caching - Store directory names in memory to avoid disk spin-ups. Makes use of cache_dirs script written by Joe L. and updated by Alex R. Berg.
 -->
 
 <!--
 Get the plugin bundle.
 -->
 <FILE Name="/boot/config/plugins/&name;/&name;-&version;.tgz">
-<URL>"&gitURL;/&name;-&version;.tgz"</URL>
+<URL>"tgzURL;/&name;-&version;.tgz"</URL>
 <MD5>&MD5;</MD5>
 </FILE>
+exit
 
 <!--
 The 'pre-install' script.
 -->
 <FILE Run="/bin/bash">
 <INLINE>
+#
+# Stop cachedirs
+#
+echo "Stopping cache_dirs..."
+/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs stop
+
+#
 # Remove emhttp files so we can re-install.
+#
 rm -rf /usr/local/emhttp/plugins/&name;/* 2>/dev/null
 
+#
 # Remove old 'bundle' files.
+#
 rm -f $(ls /boot/config/plugins/&name;/*.tgz 2>/dev/null | grep -v '&version;')
 </INLINE>
 </FILE>
@@ -186,10 +210,14 @@ Install the plugin bundle.
 -->
 <FILE Run="/bin/bash">
 <INLINE>
+#
 # Create plugin directory
+#
 mkdir /boot/config/plugins/&name; 2>/dev/null
 
+#
 # Install the 'bundle'.
+#
 tar -xf /boot/config/plugins/&name;/&name;-&version;.tgz -C /usr/local/emhttp/plugins 2>/dev/null
 </INLINE>
 </FILE>
@@ -199,7 +227,7 @@ tar -xf /boot/config/plugins/&name;/&name;-&version;.tgz -C /usr/local/emhttp/pl
 <![CDATA[
 service="0"
 cachePressure=""
-suspend=""
+suspend="-S"
 shares=""
 include=""
 adaptive="1"
@@ -211,20 +239,12 @@ scanTimeoutBusy=""
 scanTimeoutStable=""
 minimum=""
 maximum=""
-mulithreaded=""
+multithreaded=""
 ulimit=""
 log="off"
 other=""
 options=""
 ]]>
-</INLINE>
-</FILE>
-
-<!-- WORKAROUND -->
-<FILE Name="/tmp/start_service" Mode="0770">
-<INLINE>
-#!/bin/bash
-/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs start
 </INLINE>
 </FILE>
 
@@ -236,7 +256,9 @@ if [[ ! -e $cfg ]]; then
   cfg=/usr/local/emhttp/plugins/&name;/default.cfg
 fi
 
-# get unRAID key
+#
+# get Udraid key
+#
 getkey(){
   local mdcmd=/proc/mdstat
   if [[ -e $mdcmd ]]; then
@@ -245,20 +267,24 @@ getkey(){
   fi
 }
 
+#
 # Start service
-enable=$(grep -Po '^service="\K[^"]+' $cfg)
-conf=/etc/cache_dirs.conf
-if [[ $enable -eq 1 ]]; then
-  if [[ ! -e $conf ]]; then
-    grep -Po '^options="\K.*' $cfg|sed -n 'G;s:"\n$::;p' &gt;$conf
-  fi
-  if [[ $(getkey mdState) == STARTED ]]; then
-    at -M -f /tmp/start_service now 2>/dev/null
-  fi
-fi
-rm -f /tmp/start_service
+#
+enable=$(sed -n 's/^service="\([^"]*\)"$/\1/p' "$cfg")
+conf="/etc/cache_dirs.conf"
 
+if [[ "$enable" == "1" ]]; then
+	if [[ $(getkey mdState) == "STARTED" ]]; then
+		echo "Starting cache_dirs..."
+		at -f "/usr/local/emhttp/plugins/dynamix.cache.dirs/event/disks_mounted" "now" 2>/dev/null
+	fi
+else
+	rm -f "$conf"
+fi
+
+#
 # Move the old dynamix.cache.dirs.plg to plugin errors so it doesn't get installed again
+#
 old_plugin="/boot/config/plugins/dynamix.cache.dirs.plg"
 if [[ -e $old_plugin ]]; then
 	mv $old_plugin /boot/config/plugins-error/dynamix.cache.dirs.plg
@@ -269,7 +295,7 @@ echo "-----------------------------------------------------------"
 echo " Plugin &name; is installed."
 echo " This plugin requires Dynamix webGui to operate"
 echo " Copyright 2023, Bergware International"
-echo " Copyright 2024-2025, Dan Landon"
+echo " Copyright 2024-2026, Dan Landon"
 echo " Version: &version;"
 echo "-----------------------------------------------------------"
 echo " The included cache_dirs script is a third party script"
@@ -282,13 +308,25 @@ echo ""
 <!-- REMOVE SCRIPT -->
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
+#
 # Stop service
+#
+echo "Stopping cache_dirs..."
 /usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs stop
 
+#
 # Remove all plugin files from emhttp.
+#
 rm -rf /usr/local/emhttp/plugins/&name; 2>/dev/null
 
+#
+# Remove the config file
+#
+rm -f /etc/cache_dirs.conf
+
+#
 # Remove the cache_dirs 'bundle' so it will be downloaded if re-installed.
+#
 rm -rf /boot/config/plugins/&name;/&name;-&version;.tgz
 </INLINE>
 </FILE>
