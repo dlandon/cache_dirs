@@ -25,7 +25,7 @@
 - Fix: Refactor UI to simplify the settings and update all Help.
 - Fix: Cut down on excessive cache_dirs script logging. 
 - Fix: Fixed depth causes the cache_dirs script to fail to start. 
-- Fix: Folders to cache setting did not show more that a few of the selected shares.
+- Fix: Folders to cache setting did not show more than a few of the selected shares.
 - Fix: Minimum scan depth UI option not being applied.
 - Add: Status of cache_dirs and list of cached folders displayed on the right of the UI.
 - Add: Styles for a responsve design.
