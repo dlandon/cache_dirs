@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name		"dynamix.cache.dirs">
 <!ENTITY author		"dlandon">
-<!ENTITY version	"2026.08.11">
+<!ENTITY version	"2026.11.03">
 <!ENTITY launch		"Settings/FolderCachingSettings">
 <!ENTITY gitURL		"https://raw.githubusercontent.com/&author;/cache_dirs/master">
 <!ENTITY pluginURL	"&gitURL;/&author;.cache.dirs.plg">
 <!ENTITY source		"/boot/config/plugins/&name;/&name;">
 <!ENTITY supportURL	"http://forums.unraid.net/index.php?topic=36543.0">
-<!ENTITY MD5		"f4e7dacb9642da48ca1c9e35cb396939">
+<!ENTITY MD5		"b565369838a7872223d020aa132d6bcc">
 ]>
 
 <PLUGIN	name="&name;"
@@ -22,6 +22,15 @@
 <CHANGES>
 ##&name;
 ###&version;
+- Fix: Validate the plugin bundle before changing installed files.
+- Fix: Report bundle extraction failures and abort installation.
+- Fix: Improve old bundle cleanup to preserve the exact current installation bundle.
+- Fix: Report startup and shutdown failures, and prevent installation, removal, or restart from continuing after a failed stop.
+- Fix: Replace 'at' scheduling with direct startup event execution.
+- Fix: Create the plugin errors directory when needed and report legacy plugin migration failures.
+- Fix: Remove stray text outside the installation scripts and correct a changelog date.
+
+###2026.08.11
 - Fix: Refactor UI to simplify the settings and update all Help.
 - Fix: Cut down on excessive cache_dirs script logging. 
 - Fix: Fixed depth causes the cache_dirs script to fail to start. 
@@ -180,18 +189,31 @@ Get the plugin bundle.
 <URL>"&gitURL;/&name;-&version;.tgz"</URL>
 <MD5>&MD5;</MD5>
 </FILE>
-exit
 
 <!--
 The 'pre-install' script.
 -->
 <FILE Run="/bin/bash">
 <INLINE>
+
+#
+# Validate the bundle before changing the installed plugin.
+#
+if ! tar -tf "/boot/config/plugins/&name;/&name;-&version;.tgz" >/dev/null 2>&amp;1; then
+	echo "ERROR: &name; bundle is missing or invalid. Installation aborted."
+	exit 1
+fi
+
 #
 # Stop cachedirs
 #
 echo "Stopping cache_dirs..."
-/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs stop
+if [ -x "/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs" ]; then
+	if ! "/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs" stop; then
+		echo "ERROR: Unable to stop cache_dirs. Installation aborted."
+		exit 1
+	fi
+fi
 
 #
 # Remove emhttp files so we can re-install.
@@ -201,7 +223,11 @@ rm -rf /usr/local/emhttp/plugins/&name;/* 2>/dev/null
 #
 # Remove old 'bundle' files.
 #
-rm -f $(ls /boot/config/plugins/&name;/*.tgz 2>/dev/null | grep -v '&version;')
+for bundle in /boot/config/plugins/&name;/*.tgz; do
+	if [[ -f "$bundle" &amp;&amp; "$bundle" != "/boot/config/plugins/&name;/&name;-&version;.tgz" ]]; then
+		rm -f -- "$bundle"
+	fi
+done
 </INLINE>
 </FILE>
 
@@ -211,14 +237,12 @@ Install the plugin bundle.
 <FILE Run="/bin/bash">
 <INLINE>
 #
-# Create plugin directory
-#
-mkdir /boot/config/plugins/&name; 2>/dev/null
-
-#
 # Install the 'bundle'.
 #
-tar -xf /boot/config/plugins/&name;/&name;-&version;.tgz -C /usr/local/emhttp/plugins 2>/dev/null
+if ! tar -xf "/boot/config/plugins/&name;/&name;-&version;.tgz" -C /usr/local/emhttp/plugins; then
+	echo "ERROR: Unable to extract &name; bundle. Installation aborted."
+	exit 1
+fi
 </INLINE>
 </FILE>
 
@@ -276,7 +300,10 @@ conf="/etc/cache_dirs.conf"
 if [[ "$enable" == "1" ]]; then
 	if [[ $(getkey mdState) == "STARTED" ]]; then
 		echo "Starting cache_dirs..."
-		at -f "/usr/local/emhttp/plugins/dynamix.cache.dirs/event/disks_mounted" "now" 2>/dev/null
+		if ! /bin/bash "/usr/local/emhttp/plugins/&name;/event/disks_mounted"; then
+			echo "ERROR: &name; startup event failed."
+			exit 1
+		fi
 	fi
 else
 	rm -f "$conf"
@@ -286,8 +313,16 @@ fi
 # Move the old dynamix.cache.dirs.plg to plugin errors so it doesn't get installed again
 #
 old_plugin="/boot/config/plugins/dynamix.cache.dirs.plg"
-if [[ -e $old_plugin ]]; then
-	mv $old_plugin /boot/config/plugins-error/dynamix.cache.dirs.plg
+if [[ -e "$old_plugin" ]]; then
+	if mkdir -p "/boot/config/plugins-error"; then
+		if ! mv -- "$old_plugin" "/boot/config/plugins-error/dynamix.cache.dirs.plg"; then
+			echo "ERROR: Unable to move the legacy cache_dirs plugin."
+			exit 1
+		fi
+	else
+		echo "ERROR: Unable to create /boot/config/plugins-error."
+		exit 1
+	fi
 fi
 
 echo ""
@@ -312,7 +347,12 @@ echo ""
 # Stop service
 #
 echo "Stopping cache_dirs..."
-/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs stop
+if [ -x "/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs" ]; then
+	if ! "/usr/local/emhttp/plugins/&name;/scripts/rc.cachedirs" stop; then
+		echo "ERROR: Unable to stop cache_dirs. Removal aborted."
+		exit 1
+	fi
+fi
 
 #
 # Remove all plugin files from emhttp.

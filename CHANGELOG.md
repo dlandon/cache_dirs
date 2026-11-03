@@ -1,5 +1,16 @@
 # Changelog
 
+
+## 2026.11.03
+
+### Fixes
+- Validate the plugin bundle before stopping cache_dirs or changing installed files.
+- Report bundle extraction failures.
+- Preserve the current plugin bundle when removing older bundles.
+- Replace `at` scheduling with direct delayed startup.
+- Wait for pending startup before stopping cache_dirs.
+- Report shutdown failures.
+
 ## 2026.08.11 - UI Modernization
 
 ### Added
