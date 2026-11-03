@@ -11,6 +11,8 @@ log() {
 }
 
 start_cache_dirs() {
+	local rc=0
+	
 	if [[ -z $(pgrep -f "$execute") ]]; then
 		#
 		# Ensure folder names are properly quoted
@@ -27,31 +29,46 @@ start_cache_dirs() {
 	else
 		log "$script already running!"
 	fi
+
+	return "$rc"
 }
 
 stop_cache_dirs() {
-	if [[ -n $(pgrep -f "$execute") ]]; then
-		"$execute" -q &>/dev/null
-		timer=5
-		until [[ -z $(pgrep -f "$execute") || $timer -eq 0 ]]; do
-			timer=$((timer-1))
-			sleep 1
-		done
-		if [[ -n $(pgrep -f "$execute") ]]; then
-			log "$script process still running"
-		fi
-	else
-		#
-		# Always execute because cache_dirs uses subprocesses and lock-file, and it may need to clean up
-		#
-		"$execute" -q &>/dev/null
+	local rc=0
+	local timer=5
+
+	#
+	# Always request shutdown so cache_dirs can clean up its
+	# subprocesses and lock file, even if no main process is found.
+	#
+	"$execute" -q &>/dev/null
+
+	while pgrep -f "$execute" >/dev/null && ((timer > 0)); do
+		sleep 1
+		timer=$((timer - 1))
+	done
+
+	if pgrep -f "$execute" >/dev/null; then
+		log "$script process still running"
+		rc=1
 	fi
+
+	return "$rc"
 }
 
 restart_cache_dirs() {
+	local rc=0
+
 	stop_cache_dirs
-	sleep 2
-	start_cache_dirs
+	rc=$?
+
+	if [ "$rc" -eq 0 ]; then
+		sleep 2
+		start_cache_dirs
+		rc=$?
+	fi
+
+	return "$rc"
 }
 
 case "$1" in
