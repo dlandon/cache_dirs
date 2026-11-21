@@ -2,13 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name		"dynamix.cache.dirs">
 <!ENTITY author		"dlandon">
-<!ENTITY version	"2026.11.03">
+<!ENTITY version	"2026.11.21">
 <!ENTITY launch		"Settings/FolderCachingSettings">
 <!ENTITY gitURL		"https://raw.githubusercontent.com/&author;/cache_dirs/master">
 <!ENTITY pluginURL	"&gitURL;/&author;.cache.dirs.plg">
 <!ENTITY source		"/boot/config/plugins/&name;/&name;">
 <!ENTITY supportURL	"http://forums.unraid.net/index.php?topic=36543.0">
-<!ENTITY MD5		"b565369838a7872223d020aa132d6bcc">
+<!ENTITY MD5		"5f1bd069bc8f9e6dfa2499209fea79c5">
 ]>
 
 <PLUGIN	name="&name;"
@@ -22,6 +22,12 @@
 <CHANGES>
 ##&name;
 ###&version;
+- Fix: Detect array disk activity using kernel I/O counters, including on Unraid versions that no longer report `rdevLastIO`.
+- Fix: Treat missing I/O samples as unknown so adaptive scanning does not assume the disks are idle.
+- Fix: Preserve scan failure status and prevent incomplete scans from increasing the adaptive scan depth.
+- Fix: Wait the configured maximum interval before retrying an incomplete scan at minimum or fixed depth.
+
+###2026.11.03
 - Fix: Validate the plugin bundle before changing installed files.
 - Fix: Report bundle extraction failures and abort installation.
 - Fix: Improve old bundle cleanup to preserve the exact current installation bundle.

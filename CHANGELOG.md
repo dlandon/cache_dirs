@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.11.21
+
+### Fixes
+
+- Detect array disk activity using kernel I/O counters, including on Unraid versions that no longer report `rdevLastIO`.
+- Treat missing I/O samples as unknown so adaptive scanning does not assume the disks are idle.
+- Preserve scan failure status and prevent incomplete scans from increasing the adaptive scan depth.
+- Wait the configured maximum interval before retrying an incomplete scan at minimum or fixed depth.
 
 ## 2026.11.03
 
